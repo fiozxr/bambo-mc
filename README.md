@@ -102,6 +102,42 @@ Idempotent: safe to re-run any time; `--dry-run` changes nothing.
 | `bambo setup [version]` | download/verify/pin the server jar (rollback: `bambo setup 3.0.5`) |
 | `bambo watch [--once] [--interval=N]` | optional watchdog |
 
+## Configuration (for end users)
+
+Everything you usually want to change lives in **one file: `bambo.conf`**
+(auto-created from `config.example` by `bambo config init`; git-ignored).
+
+| Command | Purpose |
+|---|---|
+| `bambo config wizard` | interactive prompts, no config knowledge needed (add `--defaults` to accept current settings non-interactively) |
+| `bambo config show` | show the effective settings |
+| `bambo config set <KEY> <value>` | change one setting safely, e.g. `bambo config set BAMBO_MAX_PLAYERS 10` |
+| `bambo config apply` | validate + deploy your config to the server (`--restart` restarts it) |
+| `bambo config init` | (re)create `bambo.conf` from the example |
+| `bambo motd "<name>" ["<sub>"]` | shortcut to change the server name (updates config + deploys + restarts) |
+
+Example file (`bambo.conf`, `KEY=value`, comments welcome):
+
+```
+BAMBO_SERVER_NAME=bambo-mc        # name shown in the client list
+BAMBO_SUB_NAME=family server      # subtitle
+BAMBO_MAX_PLAYERS=20              # 1-1000
+BAMBO_XBOX_AUTH=false             # false = offline mode (trusted LAN)
+BAMBO_DIFFICULTY=1                # 0=peaceful 1=easy 2=normal 3=hard
+BAMBO_GAMEMODE=0                  # 0=survival 1=creative 2=adventure 3=spectator
+BAMBO_VIEW_DISTANCE=8             # chunks (2-32)
+BAMBO_PVP=true
+BAMBO_ENABLE_METRICS=false        # keep false
+BAMBO_HEAP=1536M                  # server memory
+BAMBO_KEEP=10                     # backups kept
+BAMBO_DASH_HOST=127.0.0.1        # dashboard address (0.0.0.0 exposes it on the LAN)
+BAMBO_DASH_PORT=8787
+#BAMBO_DASH_TOKEN=               # optional fixed dashboard token
+```
+
+Validation happens at `apply` (ranges, booleans) with clear errors. The lower-level
+`bambo config get/diff` still talk to the live `runtime/pnx.yml` (see `docs/ARCHITECTURE.md`).
+
 ## Nightly backups
 
 Installed by default (03:30):

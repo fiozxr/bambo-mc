@@ -29,5 +29,6 @@ make_fixture() {
   cp "$ROOT/server/pnx.yml" "$base/server/pnx.yml"
   cp "$ROOT/server/pnx.yml" "$base/runtime/pnx.yml"
   cp "$ROOT/install.sh" "$base/install.sh"
+  cp "$ROOT/config.example" "$base/config.example"
   echo "$base"
 }

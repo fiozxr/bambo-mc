@@ -2,6 +2,32 @@
 
 All notable changes to bambo-mc are documented here (project-initiated work, not upstream PNX).
 
+## [2.2.0] — 2026-11-02 — End-user configuration
+
+### Added
+- **`bambo.conf`** — a single, human-friendly user configuration file (auto-created from
+  the new `config.example`). Keys: server name/sub-name, max players, Xbox auth, allowlist,
+  difficulty, gamemode, view distance, PvP, metrics, heap, backup retention, dashboard
+  host/port/token.
+- **`bambo config init | show | set | apply | wizard`**:
+  - `init` — (re)create `bambo.conf` from `config.example` (mode 0600)
+  - `show` — print effective settings (config + defaults)
+  - `set <KEY> <value>` — edit one setting safely, preserving comments/order
+  - `apply [--restart]` — validate ranges/booleans and deploy to `runtime/pnx.yml`
+  - `wizard [--defaults] [--apply]` — interactive prompts (no config knowledge needed)
+- `motd` now goes through the same config pipeline (update config + deploy + restart).
+- `install.sh --auto` also creates `bambo.conf` if missing.
+
+### Changed
+- Tool/dashboard version bump to 2.2.0; README gained an end-user Configuration section.
+- Legacy direct `config set` (pnx editing) removed; `config apply-template` remains for
+  one-way template restore.
+
+### Fixed
+- Config changes now apply within the same invocation (set → apply) by refreshing the
+  in-shell value.
+- Variable-name collision between user-config keys and pnx keys (renamed to `PNX_CONFIG_KEYS`).
+
 ## [2.1.0] — 2026-11-02 — "Ready to go" automatic setup
 
 ### Added

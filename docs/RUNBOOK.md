@@ -22,6 +22,10 @@ bambo status       # both services up?
 bambo join         # what to type into a client (address changes with the network!)
 ```
 
+Most "I want to change something" tasks start at the config file: `bambo config show`,
+`bambo config wizard`, or `bambo config set <KEY> <value>` then `bambo config apply`
+(see `README.md` → Configuration).
+
 The join address changes whenever the laptop's lease changes — always take it from `bambo join`.
 
 ## Starting / stopping

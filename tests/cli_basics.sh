@@ -10,7 +10,7 @@ FIX="$(make_fixture)"
 export BAMBO_ROOT="$FIX"
 
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" version 2>&1)"
-check_contains "$out" "bambo-mc v2.1.0" "version prints tool version"
+check_contains "$out" "bambo-mc v2.2.0" "version prints tool version"
 
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" help 2>&1)"
 check_contains "$out" "bambo" "help runs"
@@ -26,7 +26,7 @@ check_contains "$out" "dash" "status shows dash"
 
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" health --json 2>&1)"
 echo "$out" | python3 -m json.tool >/dev/null 2>&1 && ok "health --json is valid JSON" || fail "health --json invalid"
-check_contains "$out" '"tool_version":"2.1.0"' "health json carries tool_version"
+check_contains "$out" '"tool_version":"2.2.0"' "health json carries tool_version"
 
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" bootstrap --dry-run 2>&1)"
 check_contains "$out" "(dry-run)" "bootstrap --dry-run previews"
@@ -37,18 +37,28 @@ else
   ok "unknown command exits nonzero"
 fi
 
-out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" config get motd 2>&1)"
-check_contains "$out" "motd:" "config get motd works"
+out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" config init 2>&1)"
+[ -f "$FIX/bambo.conf" ] && ok "config init created bambo.conf" || fail "config init missing"
+check_contains "$out" "created" "config init message"
 
-out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" config set maxPlayers 6 2>&1)"
-check_contains "$out" "maxPlayers = 6" "config set maxPlayers works"
-grep -q 'maxPlayers: 6' "$FIX/runtime/pnx.yml" && ok "config set wrote file" || fail "config set did not write"
-grep -q 'Maximum number of players' "$FIX/runtime/pnx.yml" && ok "config set preserved comments" || fail "config set ate comments"
+out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" config set BAMBO_MAX_PLAYERS 6 2>&1)"
+check_contains "$out" "BAMBO_MAX_PLAYERS = 6" "config set reports value"
+grep -q 'BAMBO_MAX_PLAYERS=6' "$FIX/bambo.conf" && ok "config set wrote conf" || fail "config set did not write conf"
 
-out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" config set motd "Hello World" 2>&1)"
-grep -q 'motd: "Hello World"' "$FIX/runtime/pnx.yml" && ok "config set quotes values with spaces" || fail "config set quoting wrong"
+out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" config apply 2>&1)"
+grep -q 'maxPlayers: 6' "$FIX/runtime/pnx.yml" && ok "config apply deployed maxPlayers" || fail "config apply did not deploy"
+grep -q 'Maximum number of players' "$FIX/runtime/pnx.yml" && ok "config apply preserved comments" || fail "config apply ate comments"
 
-# config diff between fixture live and template (they were identical before edits)
+out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" config show 2>&1)"
+check_contains "$out" "max players" "config show lists entries"
+
+out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" config wizard --defaults 2>&1)"
+grep -q 'BAMBO_SERVER_NAME=' "$FIX/bambo.conf" && ok "config wizard --defaults ran" || fail "config wizard failed"
+
+out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" motd "Test World" 2>&1)"
+grep -q 'BAMBO_SERVER_NAME=Test World' "$FIX/bambo.conf" && ok "motd updated conf" || fail "motd did not update conf"
+grep -q 'motd: "Test World"' "$FIX/runtime/pnx.yml" && ok "motd deployed" || fail "motd did not deploy"
+
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" config diff 2>&1)"
 check_contains "$out" "maxPlayers" "config diff reports drift"
 

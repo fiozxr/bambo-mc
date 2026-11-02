@@ -1,0 +1,50 @@
+# bambo-mc — user configuration
+#
+# Copy this file to bambo.conf (or just run:  bambo config init) then edit it.
+# Deploy your settings to the server with:  bambo config apply
+# See also: bambo config show   /   bambo config wizard (interactive)
+#
+# Values here override defaults but never override real environment variables.
+
+# Server name shown in the client's server list (MOTD)
+BAMBO_SERVER_NAME=bambo-mc
+# Subtitle under the server name
+BAMBO_SUB_NAME=family server
+
+# Maximum number of players (1-1000)
+BAMBO_MAX_PLAYERS=20
+
+# Require Xbox Live sign-in? false = offline mode (fine for a trusted LAN)
+BAMBO_XBOX_AUTH=false
+
+# Enforce a whitelist / allowlist? (manage players with: bambo whitelist ...)
+BAMBO_ALLOWLIST=false
+
+# Difficulty: 0=peaceful 1=easy 2=normal 3=hard
+BAMBO_DIFFICULTY=1
+
+# Default gamemode: 0=survival 1=creative 2=adventure 3=spectator
+BAMBO_GAMEMODE=0
+
+# View distance in chunks (2-32)
+BAMBO_VIEW_DISTANCE=8
+
+# Allow PvP? (true/false)
+BAMBO_PVP=true
+
+# Send anonymous metrics upstream? (recommended: false)
+BAMBO_ENABLE_METRICS=false
+
+# JVM heap size for the server
+BAMBO_HEAP=1536M
+
+# Number of backups to keep (nightly automatic backups)
+BAMBO_KEEP=10
+
+# Dashboard listen address (127.0.0.1 = this machine only; 0.0.0.0 = the LAN — use the token!)
+BAMBO_DASH_HOST=127.0.0.1
+# Dashboard port
+BAMBO_DASH_PORT=8787
+
+# Optional: set a fixed dashboard token here (otherwise dash.token is auto-generated)
+#BAMBO_DASH_TOKEN=

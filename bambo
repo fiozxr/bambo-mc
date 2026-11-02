@@ -14,7 +14,7 @@
 #   - 'doctor' is the first thing to run when something looks wrong.
 set -uo pipefail
 
-BAMBO_VERSION="2.1.0"
+BAMBO_VERSION="2.2.0"
 
 # cron's default PATH is /usr/bin:/bin, which omits /usr/sbin - where `ip` lives.
 # Without this, lan_ip()/join() silently return nothing when run from a cron job.
@@ -22,6 +22,28 @@ PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$HOME/.local/
 export PATH
 
 ROOT="${BAMBO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+
+# ---- user configuration (bambo.conf) ----
+CONF="$ROOT/bambo.conf"
+CONFIG_KEYS="BAMBO_SERVER_NAME BAMBO_SUB_NAME BAMBO_MAX_PLAYERS BAMBO_XBOX_AUTH BAMBO_ALLOWLIST BAMBO_DIFFICULTY BAMBO_GAMEMODE BAMBO_VIEW_DISTANCE BAMBO_PVP BAMBO_ENABLE_METRICS BAMBO_HEAP BAMBO_KEEP BAMBO_DASH_HOST BAMBO_DASH_PORT BAMBO_DASH_TOKEN"
+if [ -f "$CONF" ]; then
+  while IFS='=' read -r _k _v; do
+    _k="${_k//[[:space:]]/}"
+    case "$_k" in
+      ""|\#*) continue ;;
+    esac
+    case " $CONFIG_KEYS " in
+      *" $_k "*) ;;
+      *) echo "bambo: warning: unknown key in $CONF: $_k" >&2; continue ;;
+    esac
+    _v="${_v#"${_v%%[![:space:]]*}"}"
+    _v="${_v%"${_v##*[![:space:]]}"}"
+    if [ -z "${!_k:-}" ]; then
+      export "$_k=$_v"
+    fi
+  done < "$CONF"
+  unset _k _v
+fi
 SRV="$ROOT/runtime"
 JAR="$SRV/powernukkitx.jar"
 JAR_PREV="$SRV/powernukkitx.jar.prev"
@@ -414,7 +436,7 @@ cmd() {
 }
 
 # ---- config: safe, comment-preserving editing of pnx.yml (python3, stdlib) ----
-CONFIG_KEYS="motd sub-motd maxPlayers xboxAuth allowList difficulty gamemode viewDistance pvp enableMetrics language defaultLevelName"
+PNX_CONFIG_KEYS="motd sub-motd maxPlayers xboxAuth allowList difficulty gamemode viewDistance pvp enableMetrics language defaultLevelName"
 
 config_edit() {
   # config_edit <file> <key> <value>   (rewrites one key; preserves everything else)
@@ -445,27 +467,11 @@ PY
 
 config_get() {
   local key="$1"
-  case " $CONFIG_KEYS " in
+  case " $PNX_CONFIG_KEYS " in
     *" $key "*) ;;
-    *) die "config: unknown key '$key'. known: $CONFIG_KEYS" ;;
+    *) die "config: unknown key '$key'. known: $PNX_CONFIG_KEYS" ;;
   esac
   grep -E "^\\s*${key}\\s*:" "$SRV/pnx.yml" 2>/dev/null | head -1 || echo "($key not set)"
-}
-
-config_set() {
-  local key="${1:-}" val="${2:-}"
-  case " $CONFIG_KEYS " in
-    *" $key "*) ;;
-    *) die "config: unknown key '$key'. known: $CONFIG_KEYS" ;;
-  esac
-  [ -f "$SRV/pnx.yml" ] || die "missing $SRV/pnx.yml"
-  val="${val//$'\n'/ }"
-  config_edit "$SRV/pnx.yml" "$key" "$val"
-  echo "config: $key = $(config_get "$key" | sed 's/^[^:]*: *//')"
-  if [ "$key" = "motd" ] || [ "$key" = "sub-motd" ]; then
-    echo "note: MOTD is read at startup - restarting the server to apply..."
-    stop; start
-  fi
 }
 
 config_diff() {
@@ -489,7 +495,7 @@ if not keys:
 PY
 }
 
-config_apply() {
+config_apply_template() {
   # one-way: tracked template -> live config (destructive to local changes)
   [ -f "$ROOT/server/pnx.yml" ] || die "template missing: $ROOT/server/pnx.yml"
   is_up && die "server is running - stop it first (bambo stop)"
@@ -500,24 +506,233 @@ config_apply() {
   config_diff
 }
 
+# ---- user configuration engine (bambo.conf -> pnx.yml) ----
+cfg_def() {
+  case "$1" in
+    BAMBO_SERVER_NAME) echo "bambo-mc" ;;
+    BAMBO_SUB_NAME) echo "family server" ;;
+    BAMBO_MAX_PLAYERS) echo "20" ;;
+    BAMBO_XBOX_AUTH) echo false ;;
+    BAMBO_ALLOWLIST) echo false ;;
+    BAMBO_DIFFICULTY) echo 1 ;;
+    BAMBO_GAMEMODE) echo 0 ;;
+    BAMBO_VIEW_DISTANCE) echo 8 ;;
+    BAMBO_PVP) echo true ;;
+    BAMBO_ENABLE_METRICS) echo false ;;
+    BAMBO_HEAP) echo "1536M" ;;
+    BAMBO_KEEP) echo 10 ;;
+    BAMBO_DASH_HOST) echo "127.0.0.1" ;;
+    BAMBO_DASH_PORT) echo 8787 ;;
+    BAMBO_DASH_TOKEN) echo "" ;;
+  esac
+}
+cfg_val() {
+  local k="$1" v
+  v="${!k:-}"
+  [ -n "$v" ] || v="$(cfg_def "$k")"
+  echo "$v"
+}
+norm_bool() {
+  case "${1,,}" in
+    true|yes|on|1) echo true ;;
+    false|no|off|0) echo false ;;
+    *) echo "" ;;
+  esac
+}
+config_init() {
+  local force="${1:-}"
+  if [ -f "$CONF" ] && [ "$force" != "--force" ]; then
+    echo "bambo.conf already exists: $CONF"
+    return 0
+  fi
+  [ -f "$ROOT/config.example" ] || die "config.example missing - cannot initialize"
+  cp "$ROOT/config.example" "$CONF"
+  chmod 600 "$CONF"
+  echo "created $CONF (edit it, then run: bambo config apply)"
+}
+config_show() {
+  echo "# bambo-mc effective configuration  (file: ${CONF:-none})"
+  printf '  %-24s %s\n' "server name" "$(cfg_val BAMBO_SERVER_NAME)"
+  printf '  %-24s %s\n' "sub-name" "$(cfg_val BAMBO_SUB_NAME)"
+  printf '  %-24s %s\n' "max players" "$(cfg_val BAMBO_MAX_PLAYERS)"
+  printf '  %-24s %s\n' "xbox auth" "$(cfg_val BAMBO_XBOX_AUTH)"
+  printf '  %-24s %s\n' "allowlist" "$(cfg_val BAMBO_ALLOWLIST)"
+  printf '  %-24s %s\n' "difficulty" "$(cfg_val BAMBO_DIFFICULTY)"
+  printf '  %-24s %s\n' "gamemode" "$(cfg_val BAMBO_GAMEMODE)"
+  printf '  %-24s %s\n' "view distance" "$(cfg_val BAMBO_VIEW_DISTANCE)"
+  printf '  %-24s %s\n' "pvp" "$(cfg_val BAMBO_PVP)"
+  printf '  %-24s %s\n' "metrics" "$(cfg_val BAMBO_ENABLE_METRICS)"
+  printf '  %-24s %s\n' "heap" "$(cfg_val BAMBO_HEAP)"
+  printf '  %-24s %s\n' "backup retention" "$(cfg_val BAMBO_KEEP)"
+  printf '  %-24s %s\n' "dashboard host" "$(cfg_val BAMBO_DASH_HOST)"
+  printf '  %-24s %s\n' "dashboard port" "$(cfg_val BAMBO_DASH_PORT)"
+  if [ -z "$(cfg_val BAMBO_DASH_TOKEN)" ]; then
+    echo "  dashboard token          (file: dash.token)"
+  else
+    echo "  dashboard token          (from config/env)"
+  fi
+}
+config_set_conf() {
+  # edits bambo.conf (KEY=value lines), preserving comments/order; updates the
+  # in-shell value too, so a same-invocation 'apply' sees the new setting
+  local key="$1" val="$2"
+  case " $CONFIG_KEYS " in
+    *" $key "*) ;;
+    *) die "config: unknown key '$key'. known keys: $CONFIG_KEYS" ;;
+  esac
+  command -v python3 >/dev/null || die "config needs python3"
+  [ -f "$CONF" ] || config_init
+  ESX_CONF="$CONF" ESX_KEY="$key" ESX_VAL="$val" python3 - <<'PY' || die "failed to set $key in $CONF"
+import os, re
+path = os.environ["ESX_CONF"]; key = os.environ["ESX_KEY"]; val = os.environ["ESX_VAL"]
+pat = re.compile(r"^(\s*)" + re.escape(key) + r"(?:\s*=\s*.*)?$")
+out, hit = [], False
+for line in open(path, encoding="utf-8"):
+    if pat.match(line):
+        out.append(key + "=" + val + "\n"); hit = True
+    else:
+        out.append(line)
+if not hit:
+    out.append("\n" + key + "=" + val + "\n")
+tmp = path + ".tmp"
+open(tmp, "w", encoding="utf-8").writelines(out)
+os.replace(tmp, path)
+PY
+  export "$key=$val"
+}
+cfg_check() {
+  local k v b
+  for k in BAMBO_XBOX_AUTH BAMBO_ALLOWLIST BAMBO_PVP BAMBO_ENABLE_METRICS; do
+    v="$(cfg_val "$k")"; b="$(norm_bool "$v")"
+    [ -n "$b" ] || die "$k must be true/false (got '$v')"
+  done
+  v="$(cfg_val BAMBO_MAX_PLAYERS)"
+  [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -ge 1 ] && [ "$v" -le 1000 ] || die "BAMBO_MAX_PLAYERS must be a number 1..1000 (got '$v')"
+  v="$(cfg_val BAMBO_DIFFICULTY)"
+  [[ "$v" =~ ^[0-3]$ ]] || die "BAMBO_DIFFICULTY must be 0..3 (got '$v')"
+  v="$(cfg_val BAMBO_GAMEMODE)"
+  [[ "$v" =~ ^[0-3]$ ]] || die "BAMBO_GAMEMODE must be 0..3 (got '$v')"
+  v="$(cfg_val BAMBO_VIEW_DISTANCE)"
+  [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -ge 2 ] && [ "$v" -le 32 ] || die "BAMBO_VIEW_DISTANCE must be 2..32 (got '$v')"
+}
+config_deploy_key() {
+  # config_deploy_key <BAMBO_KEY> <pnx_key> [bool]
+  local ck="$1" pk="$2" isbool="${3:-}" v
+  v="$(cfg_val "$ck")"
+  [ -n "$isbool" ] && v="$(norm_bool "$v")"
+  config_edit "$SRV/pnx.yml" "$pk" "$v" || die "failed to write $pk to runtime/pnx.yml"
+}
+config_apply() {
+  local restart=0
+  [ "${1:-}" = "--restart" ] && restart=1
+  cfg_check
+  [ -f "$SRV/pnx.yml" ] || die "missing $SRV/pnx.yml - configure the server first (bambo setup)"
+  config_deploy_key BAMBO_SERVER_NAME motd
+  config_deploy_key BAMBO_SUB_NAME sub-motd
+  config_deploy_key BAMBO_MAX_PLAYERS maxPlayers
+  config_deploy_key BAMBO_XBOX_AUTH xboxAuth bool
+  config_deploy_key BAMBO_ALLOWLIST allowList bool
+  config_deploy_key BAMBO_DIFFICULTY difficulty
+  config_deploy_key BAMBO_GAMEMODE gamemode
+  config_deploy_key BAMBO_VIEW_DISTANCE viewDistance
+  config_deploy_key BAMBO_PVP pvp bool
+  config_deploy_key BAMBO_ENABLE_METRICS enableMetrics bool
+  echo "applied configuration -> runtime/pnx.yml"
+  if [ "$restart" = 1 ] && is_up; then
+    echo "restarting server to apply..."
+    stop; start
+  elif [ "$restart" = 1 ]; then
+    echo "server is stopped - start it with 'bambo start' when ready."
+  fi
+}
+config_wizard() {
+  local applynow=0 defaults=0 a
+  for a in "$@"; do
+    case "$a" in
+      --apply) applynow=1 ;;
+      --defaults) defaults=1 ;;
+      *) die "wizard: unknown option '$a'" ;;
+    esac
+  done
+  if [ "$defaults" = 0 ] && [ ! -t 0 ]; then
+    die "wizard needs an interactive terminal (or run 'bambo config wizard --defaults')"
+  fi
+  command -v python3 >/dev/null || die "wizard needs python3"
+  [ -f "$CONF" ] || config_init
+  ESX_CONF="$CONF" ESX_DEFAULTS="$defaults" python3 - <<'PY' || die "wizard failed"
+import os, re, sys
+path = os.environ["ESX_CONF"]; defaults = os.environ["ESX_DEFAULTS"] == "1"
+cur = {}
+try:
+    for line in open(path, encoding="utf-8"):
+        m = re.match(r"^\s*([A-Za-z0-9_]+)\s*=\s*(.*?)\s*$", line)
+        if m:
+            cur[m.group(1)] = m.group(2)
+except Exception:
+    pass
+QS = [
+    ("BAMBO_SERVER_NAME", "Server name shown in the client list", "bambo-mc"),
+    ("BAMBO_SUB_NAME", "Subtitle under the server name", "family server"),
+    ("BAMBO_MAX_PLAYERS", "Maximum number of players (1-1000)", "20"),
+    ("BAMBO_XBOX_AUTH", "Require Xbox Live sign-in? (true/false)", "false"),
+    ("BAMBO_ALLOWLIST", "Enable whitelist/allowlist? (true/false)", "false"),
+    ("BAMBO_DIFFICULTY", "Difficulty 0=peaceful 1=easy 2=normal 3=hard", "1"),
+    ("BAMBO_GAMEMODE", "Default gamemode 0=survival 1=creative 2=adventure 3=spectator", "0"),
+    ("BAMBO_VIEW_DISTANCE", "View distance in chunks (2-32)", "8"),
+    ("BAMBO_PVP", "Allow PvP? (true/false)", "true"),
+    ("BAMBO_ENABLE_METRICS", "Send anonymous metrics upstream? (true/false)", "false"),
+    ("BAMBO_HEAP", "JVM heap size (e.g. 1536M)", "1536M"),
+    ("BAMBO_KEEP", "Number of backups to keep", "10"),
+    ("BAMBO_DASH_HOST", "Dashboard listen address (127.0.0.1 = local only)", "127.0.0.1"),
+    ("BAMBO_DASH_PORT", "Dashboard port", "8787"),
+]
+lines = []
+for k, q, d in QS:
+    prev = cur.get(k, d)
+    if defaults:
+        val = prev
+    else:
+        sys.stdout.write("  %s [%s]: " % (q, prev)); sys.stdout.flush()
+        val = sys.stdin.readline().strip()
+        if not val:
+            val = prev
+    lines.append(k + "=" + val)
+open(path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+PY
+  echo "configuration written to $CONF"
+  if [ "$applynow" = 1 ]; then
+    config_apply --restart
+  else
+    echo "run 'bambo config apply' to deploy it to the server."
+  fi
+}
+
 config() {
-  case "${1:-diff}" in
+  case "${1:-show}" in
+    init)  config_init "${2:-}" ;;
+    show|list) config_show ;;
+    set)   [ $# -ge 3 ] || die "usage: bambo config set <key> <value>"
+           config_set_conf "$2" "$3"
+           echo "config: $2 = $3  (run 'bambo config apply' to deploy)" ;;
+    apply) config_apply "${2:-}" ;;
+    apply-template) config_apply_template ;;
+    wizard) config_wizard "${@:2}" ;;
     get)   config_get "${2:-motd}" ;;
-    set)   [ $# -ge 3 ] || die "usage: bambo config set <key> <value>"; config_set "$2" "$3" ;;
     diff)  config_diff ;;
-    apply) config_apply ;;
-    *)     die "config: use get|set|diff|apply" ;;
+    *)     die "config: use init|show|set|apply|apply-template|wizard|get|diff" ;;
   esac
 }
 
 motd() {
   if [ "${1:-}" = "--show" ] || [ $# -eq 0 ]; then
-    echo "current:"; config_get motd; config_get sub-motd
+    echo "current server name: $(cfg_val BAMBO_SERVER_NAME)  /  $(cfg_val BAMBO_SUB_NAME)"
     [ $# -eq 0 ] && echo "usage: bambo motd \"<name>\" [\"<sub-name>\"]"
     return 0
   fi
-  config_set motd "$1"
-  [ $# -ge 2 ] && config_set sub-motd "$2"
+  config_set_conf BAMBO_SERVER_NAME "$1"
+  [ $# -ge 2 ] && config_set_conf BAMBO_SUB_NAME "$2"
+  echo "updated config; deploying and restarting..."
+  config_apply --restart
 }
 backup() {
   local force="${1:-}"
@@ -816,7 +1031,8 @@ bambo (alias: bambo-mc) v$BAMBO_VERSION - control the Bedrock server + admin das
   bambo world list|save|tp  worlds (create/delete/rename need a MultiWorld plugin)
   bambo motd "<name>" ["<sub>"]   set the server-list name (edits config + restarts)
   bambo cmd <console-command>          run ANY command on the server console
-  bambo config get|set|diff|apply      inspect/edit pnx.yml safely (comment-preserving)
+  bambo config init|show|set|apply|wizard|get|diff|apply-template
+                             user configuration (bambo.conf) -> server (pnx.yml)
 
   bambo backup [--force]    snapshot worlds+players (stop the server first)
   bambo restore list|<ts>   roll worlds back to a snapshot
@@ -882,12 +1098,16 @@ COMMANDS
                          supported by PNX's built-in /world; add a MultiWorld plugin.
     cmd <text>           send an arbitrary console command (operator pass-through;
                          newlines rejected for safety)
-    motd "<name>" ["<sub>"]   set server-list name; edits pnx.yml safely then restarts
-    config get|set|diff|apply
-                         inspect/edit pnx.yml. set edits one key, preserving comments
-                         and quoting only when needed; diff compares live runtime/pnx.yml
-                         against the tracked server/pnx.yml template; apply copies the
-                         template over the live config (backup of the old one kept).
+    motd "<name>" ["<sub>"]   set server-list name; edits bambo.conf then deploys and restarts
+    config init|show|set|apply|wizard|get|diff|apply-template
+                         USER CONFIGURATION lives in bambo.conf (auto-created from
+                         config.example; KEY=value, comments welcome). init creates
+                         it; show prints effective values; set edits one key safely;
+                         apply validates ranges/booleans and deploys to
+                         runtime/pnx.yml (--restart restarts the server); wizard
+                         prompts interactively (--defaults non-interactive);
+                         get/diff query the live pnx.yml and the tracked template;
+                         apply-template overwrites the live config from the template.
     backup [--force]     timestamped snapshot of worlds+players+pnx.yml+manifest.json;
                          refuses to copy a RUNNING LevelDB store unless --force.
                          Keeps BAMBO_KEEP (default 10) newest in runtime/backups.

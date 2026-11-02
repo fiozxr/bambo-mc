@@ -207,6 +207,11 @@ if [ "$AUTO" = 1 ]; then
   ensure_deps || exit 2
   ensure_cron
   ensure_token
+  # make sure a user configuration exists (created from config.example if missing)
+  if [ ! -f "$REPO/bambo.conf" ]; then
+    (cd "$REPO" && ./bambo config init) >/dev/null 2>&1 || true
+    printf '  config: created bambo.conf (edit it, then: bambo config apply)\n'
+  fi
 fi
 
 # --dry-run: stop before anything mutates the system
