@@ -18,7 +18,7 @@ set -uo pipefail
 # - SC2015: helpers ok()/bad()/info() always exit 0 (they only print), so "A && B || C" is safe.
 # - SC2012: ls is used deliberately on directories this project owns (backups/worlds).
 
-BAMBO_VERSION="2.5.2"
+BAMBO_VERSION="2.5.3"
 
 # cron's default PATH is /usr/bin:/bin, which omits /usr/sbin - where `ip` lives.
 # Without this, lan_ip()/join() silently return nothing when run from a cron job.
@@ -688,6 +688,54 @@ setup_choose() {
 }
 
 # ---- webhook notifications (optional; enabled by BAMBO_WEBHOOK_URL) ----
+setup_menu() {
+  [ -t 0 ] || die "version menu needs an interactive terminal (use plain 'bambo setup' for latest)"
+  local detected tag ans custom
+  detected="$(client_detect)"
+  echo
+  echo "Which server version do you want to install?"
+  echo "  1) Latest stable (fetched from GitHub)"
+  if [ -n "$detected" ]; then
+    tag="$(client_to_pnx "$detected")"
+    if [ -n "$tag" ]; then
+      echo "  2) Match your client ($detected -> PNX $tag, protocol $(pnx_facts "$tag" | cut -d'|' -f1))"
+    else
+      echo "  2) Match your client ($detected -> no known server release)"
+    fi
+  else
+    echo "  2) Match your client (none detected on this machine)"
+  fi
+  echo "  3) PNX 3.0.6 (Bedrock 1.26.60, protocol 2225)"
+  echo "  4) PNX 3.0.5 (Bedrock 1.26.50, protocol 2193)"
+  echo "  5) PNX 3.0.4 (Bedrock 1.26.45, protocol 2169)"
+  echo "  6) PNX 3.0.3 (Bedrock 1.26.44, protocol 2168)"
+  echo "  7) Another release (type a tag, e.g. 3.0.2)"
+  echo "  (Enter) Latest stable"
+  printf 'Your choice [1]: '
+  read -r ans || true
+  case "${ans:-1}" in
+    2)
+      if [ -n "$tag" ]; then
+        echo "installing PNX $tag (matches client $detected)..."
+        setup "$tag"
+      else
+        echo "no matching release known for $detected - installing latest stable"
+        setup
+      fi
+      ;;
+    3) setup 3.0.6 ;;
+    4) setup 3.0.5 ;;
+    5) setup 3.0.4 ;;
+    6) setup 3.0.3 ;;
+    7)
+      printf 'PNX release tag (e.g. 3.0.2): '
+      read -r custom || true
+      [[ "$custom" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "invalid tag '$custom'"
+      setup "$custom"
+      ;;
+    *) echo "installing latest stable PNX..."; setup ;;
+  esac
+}
 notify() {
   local event="$1" summary="${2:-}"
   local url; url="$(cfg_val BAMBO_WEBHOOK_URL)"
@@ -1647,7 +1695,7 @@ main() {
         motd|name) motd "$@" ;;
         config)   config "$@" ;;
         bootstrap) bootstrap "$@" ;;
-        setup)    if [ "${1:-}" = "--ask" ]; then setup_choose; else setup "${1:-}"; fi ;;
+        setup)    case "${1:-}" in --ask) setup_choose ;; --menu) setup_menu ;; *) setup "${1:-}" ;; esac ;;
         backup)   backup "${1:-}" ;;
         restore)  restore "${1:-list}" ;;
         *)        die "unknown option '$a' - try: bambo --help" ;;

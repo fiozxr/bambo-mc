@@ -2,6 +2,15 @@
 
 All notable changes to bambo-mc are documented here (project-initiated work, not upstream PNX).
 
+## [2.5.3] — 2026-11-02 — Plain installer asks; menu version picker
+
+### Changed
+- `./install.sh` now asks for the server version whenever run in a terminal: a numbered menu (latest stable, match client, specific PNX releases, custom tag) before the download. Non-interactive runs keep using latest stable.
+- `bambo setup --menu` exposes the same picker for manual installs/upgrades.
+- Final installer message points to `bambo start`.
+- Version bump to 2.5.3.
+
+
 ## [2.5.2] — 2026-11-02 — Ask by default; updates ask too
 
 ### Changed

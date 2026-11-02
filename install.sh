@@ -229,14 +229,14 @@ fi
 
 # ensure the server jar (the one large resource) - download+verify only if absent
 EASK=""
-if [ "${ASK:-0}" = 1 ] || { [ "${ASKOFF:-0}" != 1 ] && [ -t 1 ]; }; then
+if [ "${ASKOFF:-0}" != 1 ] && [ -t 1 ]; then
   EASK=1
 else
   EASK=0
 fi
 if [ ! -f "$REPO/runtime/powernukkitx.jar" ] || [ "$FORCEJAR" = 1 ]; then
   spin "downloading and verifying the server (this can take a while)"
-  "$REPO/bambo" --setup${EASK:+ --ask} >/tmp/bambo-install-jar.log 2>&1; jar_rc=$?
+  "$REPO/bambo" --setup${EASK:+ --menu} >/tmp/bambo-install-jar.log 2>&1; jar_rc=$?
   spindown
   [ $jar_rc -eq 0 ] || printf '  \033[33m!\033[0m jar setup had issues (see /tmp/bambo-install-jar.log)\n'
 else
@@ -277,3 +277,5 @@ if [ "$START" = 1 ]; then
   echo "  starting services (server + dashboard)..."
   (cd "$REPO" && ./bambo up)
 fi
+
+  You are ready. Start the server with:  bambo start
