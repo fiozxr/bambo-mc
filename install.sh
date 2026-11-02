@@ -313,4 +313,5 @@ if [ "$START" = 1 ]; then
   (cd "$REPO" && ./bambo up)
 fi
 
-  You are ready. Start the server with:  bambo start
+echo
+printf '  You are ready. Start the server with:  bambo start\n'
