@@ -10,7 +10,7 @@ FIX="$(make_fixture)"
 export BAMBO_ROOT="$FIX"
 
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" version 2>&1)"
-check_contains "$out" "bambo-mc v2.5.0" "version prints tool version"
+check_contains "$out" "bambo-mc v2.5.1" "version prints tool version"
 
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" help 2>&1)"
 check_contains "$out" "bambo" "help runs"
@@ -26,7 +26,7 @@ check_contains "$out" "dash" "status shows dash"
 
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" health --json 2>&1)"
 echo "$out" | python3 -m json.tool >/dev/null 2>&1 && ok "health --json is valid JSON" || fail "health --json invalid"
-check_contains "$out" '"tool_version":"2.5.0"' "health json carries tool_version"
+check_contains "$out" '"tool_version":"2.5.1"' "health json carries tool_version"
 
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" bootstrap --dry-run 2>&1)"
 check_contains "$out" "(dry-run)" "bootstrap --dry-run previews"
@@ -130,5 +130,10 @@ fi
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" backup 2>&1)"
 check_contains "$out" "snapshot" "backup snapshots fixture worlds"
 
-rm -rf "$FIX"
-summary
+# ---- setup --ask guard ----
+if BAMBO_ROOT="$FIX" "$ROOT/bambo" setup --ask </dev/null >/dev/null 2>&1; then
+  fail "setup --ask should require an interactive terminal"
+else
+  ok "setup --ask guards non-interactive"
+fi
+

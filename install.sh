@@ -19,6 +19,7 @@
 #                               jar, token, nightly backup cron, wrappers, dashboard
 #   ./install.sh --auto --start   also start the game server after installing
 #   ./install.sh --auto --dry-run preview everything --auto would do (changes nothing)
+#   ./install.sh --auto --ask  prompt: match installed client version, or install latest
 set -uo pipefail
 
 # shellcheck disable=SC1003,SC2016
@@ -227,7 +228,7 @@ fi
 # ensure the server jar (the one large resource) - download+verify only if absent
 if [ ! -f "$REPO/runtime/powernukkitx.jar" ] || [ "$FORCEJAR" = 1 ]; then
   spin "downloading and verifying the server (this can take a while)"
-  "$REPO/bambo" --setup >/tmp/bambo-install-jar.log 2>&1; jar_rc=$?
+  "$REPO/bambo" --setup${ASK:+ --ask} >/tmp/bambo-install-jar.log 2>&1; jar_rc=$?
   spindown
   [ $jar_rc -eq 0 ] || printf '  \033[33m!\033[0m jar setup had issues (see /tmp/bambo-install-jar.log)\n'
 else

@@ -2,6 +2,19 @@
 
 All notable changes to bambo-mc are documented here (project-initiated work, not upstream PNX).
 
+## [2.5.1] — 2026-11-02 — Client-version matching installer
+
+### Added
+- **`bambo setup --ask`** / **`bambo bootstrap --ask`** / **`install.sh --auto --ask`**:
+  detects a locally installed Bedrock client version (Linux launcher caches, override with
+  `BAMBO_CLIENT_VERSION`), maps it to the matching PNX release (1.26.60 → 3.0.6,
+  1.26.50 → 3.0.5, …), and asks whether to install the matching server or the latest stable.
+  Non-interactive runs keep using the latest stable.
+
+### Changed
+- Tool/dashboard version bump to 2.5.1.
+
+
 ## [2.5.0] — 2026-11-02 — Engine upgrade to PNX 3.0.6
 
 ### Changed

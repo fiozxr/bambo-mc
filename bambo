@@ -18,7 +18,7 @@ set -uo pipefail
 # - SC2015: helpers ok()/bad()/info() always exit 0 (they only print), so "A && B || C" is safe.
 # - SC2012: ls is used deliberately on directories this project owns (backups/worlds).
 
-BAMBO_VERSION="2.5.0"
+BAMBO_VERSION="2.5.1"
 
 # cron's default PATH is /usr/bin:/bin, which omits /usr/sbin - where `ip` lives.
 # Without this, lan_ip()/join() silently return nothing when run from a cron job.
@@ -621,6 +621,70 @@ world_trash() {
     purge) world_trash_purge "$1" ;;
     *) die "world trash: use list|restore|purge" ;;
   esac
+}
+
+# ---- client-version detection + matching-server choice (installer / setup) ----
+client_detect() {
+  # Best-effort detection of a locally installed Bedrock client version (Linux
+  # launcher caches). Returns e.g. "1.26.60" or "" when unknown. Override with
+  # BAMBO_CLIENT_VERSION.
+  local v="" d f
+  v="${BAMBO_CLIENT_VERSION:-}"
+  if [ -z "$v" ]; then
+    for d in "$HOME/.local/share/mcpelauncher" "$HOME/.mcpelauncher" "$HOME/.cache/mcpelauncher"; do
+      [ -d "$d" ] || continue
+      for f in "$d"/versions/*.json "$d"/*version*.json "$d"/data/*.json; do
+        [ -f "$f" ] || continue
+        v="$(grep -hoE '"version"[[:space:]]*:[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+' "$f" 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
+        [ -n "$v" ] && break
+      done
+      [ -n "$v" ] && break
+    done
+  fi
+  echo "$v"
+}
+client_to_pnx() {
+  # map a Bedrock client version to the matching PNX release tag ("" = unknown)
+  case "$1" in
+    1.26.60*) echo "3.0.6" ;;
+    1.26.50*) echo "3.0.5" ;;
+    1.26.45*) echo "3.0.4" ;;
+    1.26.44*) echo "3.0.3" ;;
+    *) echo "" ;;
+  esac
+}
+setup_choose() {
+  if [ ! -t 0 ]; then
+    die "setup --ask needs an interactive terminal (use plain 'bambo setup' for defaults)"
+  fi
+  local detected tag want ans
+  detected="$(client_detect)"
+  echo "client version detected: ${detected:-unknown}"
+  if [ -n "$detected" ]; then
+    tag="$(client_to_pnx "$detected")"
+  fi
+  if [ -n "$tag" ]; then
+    printf 'Install matching server PNX %s (protocol %s)? [Y/n] ' "$tag" "$(pnx_facts "$tag" | cut -d'|' -f1)"
+    read -r ans || true
+    case "${ans:-y}" in
+      y|Y|"") want="$tag" ;;
+      *) want="" ;;
+    esac
+  else
+    printf 'No known server matches version %s. Install latest stable? [Y/n] ' "${detected:-detected}"
+    read -r ans || true
+    case "${ans:-y}" in
+      y|Y|"") want="" ;;
+      *) die "cancelled by user" ;;
+    esac
+  fi
+  if [ -n "$want" ]; then
+    echo "installing PNX $want (matches client $detected)..."
+    setup "$want"
+  else
+    echo "installing latest stable PNX..."
+    setup
+  fi
 }
 
 # ---- webhook notifications (optional; enabled by BAMBO_WEBHOOK_URL) ----
@@ -1373,7 +1437,8 @@ bambo (alias: bambo-mc) v$BAMBO_VERSION - control the Bedrock server + admin das
   bambo backup [--force]    snapshot worlds+players (stop the server first)
   bambo restore list|<ts>   roll worlds back to a snapshot
   bambo setup [version]     download/verify the server jar (pins the deployed version)
-  bambo bootstrap [--start] [--dry-run]   automatic fresh-machine setup:
+  bambo setup --ask           ask: match installed client version, or install latest
+  bambo bootstrap [--start] [--dry-run] [--ask]   automatic fresh-machine setup:
                           deps + jar + wrappers + nightly cron + token (+ server)
 
   bambo help                this message
@@ -1478,6 +1543,8 @@ COMMANDS
                          downloads and verifying the published sha256; records the
                          deployment state. The previous jar is kept as
                          powernukkitx.jar.prev for offline rollback.
+                         --ask prompts to install the release matching a detected
+                         local client version, or the latest stable.
     bootstrap [--start] [--dry-run]
                          ONE-COMMAND fresh-machine setup: ensures system deps
                          (apt/dnf/zypper/pacman), the server jar, wrappers, the
@@ -1552,11 +1619,13 @@ main() {
         motd|name) motd "$@" ;;
         config)   config "$@" ;;
         bootstrap) bootstrap "$@" ;;
-        setup)    setup "${1:-}" ;;
+        setup)    if [ "${1:-}" = "--ask" ]; then setup_choose; else setup "${1:-}"; fi ;;
         backup)   backup "${1:-}" ;;
         restore)  restore "${1:-list}" ;;
         *)        die "unknown option '$a' - try: bambo --help" ;;
       esac ;;
   esac
 }
-main "$@"
+if [ "${BAMBO_NOEXEC:-0}" != 1 ]; then
+  main "$@"
+fi

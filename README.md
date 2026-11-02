@@ -84,6 +84,7 @@ If the jar is missing: `bambo setup` (downloads + sha256-verifies the newest sta
 | 6. Launch | starts the dashboard (always); with `--start` also starts the game server |
 
 Idempotent: safe to re-run any time; `--dry-run` changes nothing.
+Use `bambo bootstrap --ask` (or `install.sh --auto --ask`) to choose between the server release matching your installed client version and the latest stable.
 
 ## Core usage
 
