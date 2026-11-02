@@ -28,7 +28,7 @@ set -uo pipefail
 # - SC2016: the PATH hint is printed literally for the user (single quotes intentional).
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-}")" 2>/dev/null && pwd || echo "")"
-REPO=""; PREFIX=""; SYSTEM=0; UNINSTALL=0; LAUNCH=1; FORCEJAR=0; CHECK=0; AUTO=0; START=0; DRYRUN=0; ASK=0; ASKOFF=0
+REPO=""; PREFIX=""; SYSTEM=0; UNINSTALL=0; LAUNCH=1; FORCEJAR=0; CHECK=0; AUTO=0; START=0; DRYRUN=0; ASKOFF=0
 
 # ---- locate the app folder (works run-from-repo AND via 'curl | bash') ----
 locate_repo() {
