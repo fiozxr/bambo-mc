@@ -14,7 +14,7 @@
 #   - 'doctor' is the first thing to run when something looks wrong.
 set -uo pipefail
 
-BAMBO_VERSION="2.2.0"
+BAMBO_VERSION="2.3.0"
 
 # cron's default PATH is /usr/bin:/bin, which omits /usr/sbin - where `ip` lives.
 # Without this, lan_ip()/join() silently return nothing when run from a cron job.
@@ -410,19 +410,118 @@ whitelist() {
   esac
 }
 
+WORLD_NAME_RE='^[A-Za-z0-9_-]+$'
+
+default_world() {
+  grep -E '^\s*defaultLevelName\s*:' "$SRV/pnx.yml" 2>/dev/null | sed 's/.*: *//' | tr -d '"'
+}
+world_exists() { [ -d "$SRV/worlds/$1" ]; }
+world_require_stopped() { is_up && die "server is running - stop it first (bambo stop)"; }
+
+world_list() {
+  local d dir def
+  def="$(default_world)"
+  local any=0
+  for dir in "$SRV/worlds"/*/; do
+    [ -d "$dir" ] || continue
+    any=1
+    d="$(basename "$dir")"
+    if [ "$d" = "$def" ]; then
+      printf '  %-24s %6s  %s\n' "$d" "$(du -sh "$dir" | cut -f1)" "(default)"
+    else
+      printf '  %-24s %6s\n' "$d" "$(du -sh "$dir" | cut -f1)"
+    fi
+  done
+  [ "$any" = 0 ] && echo "  (no worlds yet - run the server once to generate the default world)" || true
+}
+world_create() {
+  local name="${1:-}" tmpl="${2:-world}"
+  [[ "$name" =~ $WORLD_NAME_RE ]] || die "world create: invalid name '$name' (letters/digits/_/- only)"
+  lock_acquire; world_require_stopped
+  world_exists "$name" && { lock_release; die "world '$name' already exists"; }
+  world_exists "$tmpl" || { lock_release; die "template world '$tmpl' not found (use an existing world as template)"; }
+  cp -a "$SRV/worlds/$tmpl" "$SRV/worlds/$name" || { lock_release; die "copy failed"; }
+  lock_release
+  echo "created world '$name' (copied from '$tmpl')"
+  echo "next:  bambo world default $name   &&   bambo restart"
+}
+world_rename() {
+  local old="${1:-}" new="${2:-}"
+  [[ "$old" =~ $WORLD_NAME_RE ]] && [[ "$new" =~ $WORLD_NAME_RE ]] || die "world rename: invalid name(s) (letters/digits/_/- only)"
+  lock_acquire; world_require_stopped
+  world_exists "$old" || { lock_release; die "world '$old' not found"; }
+  world_exists "$new" && { lock_release; die "world '$new' already exists"; }
+  mv "$SRV/worlds/$old" "$SRV/worlds/$new" || { lock_release; die "rename failed"; }
+  if [ "$(default_world)" = "$old" ]; then
+    config_edit "$SRV/pnx.yml" defaultLevelName "$new" || { lock_release; die "renamed world but failed to update defaultLevelName - fix manually"; }
+    echo "  default world pointer updated to '$new'"
+  fi
+  lock_release
+  echo "renamed world '$old' -> '$new'"
+}
+world_delete() {
+  local name="${1:-}" force="${2:-}" stamp
+  [[ "$name" =~ $WORLD_NAME_RE ]] || die "world delete: invalid name"
+  lock_acquire; world_require_stopped
+  world_exists "$name" || { lock_release; die "world '$name' not found"; }
+  if [ "$(default_world)" = "$name" ] && [ "$force" != "--force" ]; then
+    lock_release
+    die "world '$name' is the DEFAULT world - switch default first (bambo world default <other>) or pass --force"
+  fi
+  mkdir -p "$SRV/.trash/worlds"
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  mv "$SRV/worlds/$name" "$SRV/.trash/worlds/$stamp-$name" || { lock_release; die "move to trash failed"; }
+  lock_release
+  echo "world '$name' moved to runtime/.trash/worlds/$stamp-$name"
+  echo "restore: mv runtime/.trash/worlds/$stamp-$name runtime/worlds/$name"
+  echo "permanent delete: rm -rf runtime/.trash/worlds/$stamp-$name"
+}
+world_default() {
+  local name="${1:-}"
+  [[ "$name" =~ $WORLD_NAME_RE ]] || die "world default: invalid name"
+  world_exists "$name" || die "world '$name' not found"
+  config_edit "$SRV/pnx.yml" defaultLevelName "$name" || die "failed to set defaultLevelName"
+  echo "default world -> '$name'"
+  if is_up; then
+    echo "restart required to take effect: bambo restart"
+  fi
+}
+
 world() {
   local sub="${1:-}"; shift || true
   case "$sub" in
-    list)   console_out "/world list" ;;
+    list)   world_list ;;
+    create) [ $# -ge 1 ] || die "usage: bambo world create <name> [--template <world>]"
+            local tmpl="world"
+            if [ "${1:-}" = "--template" ]; then tmpl="$2"; shift 2; fi
+            world_create "$1" "$tmpl" ;;
+    rename) [ $# -ge 2 ] || die "usage: bambo world rename <old> <new>"; world_rename "$1" "$2" ;;
+    delete|remove) [ $# -ge 1 ] || die "usage: bambo world delete <name> [--force]"; world_delete "$1" "${2:-}" ;;
+    default) [ $# -ge 1 ] || die "usage: bambo world default <name>"; world_default "$1" ;;
     save)   console "/save-all" ;;
     tp)     [ $# -ge 1 ] || die "usage: bambo world tp <world>"; console "/world tp $*" ;;
-    create|delete|remove|rename)
-      die "PNX built-in /world does not support '$sub' (only list/tp). Add a MultiWorld
-plugin for real world management; renaming/deleting by hand means stopping the server and
-moving folders under $SRV/worlds - say so if you want me to script that safely." ;;
-    *)      die "world: use list|save|tp (create/delete need a plugin)" ;;
+    *)      die "world: use list|create|rename|delete|default|save|tp" ;;
   esac
 }
+
+# ---- user management (operators, whitelist, bans, kicks, gamemode) ----
+user() {
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    list|players) players ;;
+    op)    op "$@" ;;
+    deop|unop) op del "$@" ;;
+    whitelist|whl) whitelist "$@" ;;
+    ban)   [ $# -ge 1 ] || die "usage: bambo user ban <player> [reason]"; console "/ban $*" ;;
+    unban|pardon) [ $# -ge 1 ] || die "usage: bambo user unban <player>"; console "/pardon $*" ;;
+    kick)  [ $# -ge 1 ] || die "usage: bambo user kick <player> [reason]"; console "/kick $*" ;;
+    gamemode|gm) [ $# -ge 1 ] || die "usage: bambo user gamemode <0-3> [player]"; console "/gamemode $*" ;;
+    *)     die "user: use list|op|deop|whitelist|ban|unban|kick|gamemode" ;;
+  esac
+}
+plugins() { console_out "/plugins"; }
+broadcast() { [ $# -ge 1 ] || die "usage: bambo broadcast <message>"; console "/say $*"; }
+tps() { console_out "/tps"; }
 
 # raw operator command pass-through (this is what the dashboard reuses)
 cmd() {
@@ -1028,9 +1127,11 @@ bambo (alias: bambo-mc) v$BAMBO_VERSION - control the Bedrock server + admin das
   bambo watch [--once] [--interval=N]   optional watchdog (restarts crashed server)
 
   bambo players             list players online
+  bambo user list|op|deop|whitelist|ban|unban|kick|gamemode   manage players
   bambo op add|del|list <player>       grant / revoke / show operators
   bambo whitelist add|remove|list|on|off|reload <player>
-  bambo world list|save|tp  worlds (create/delete/rename need a MultiWorld plugin)
+  bambo world list|create|rename|delete|default|save|tp   manage worlds (safe, offline)
+  bambo plugins / broadcast <msg> / tps
   bambo motd "<name>" ["<sub>"]   set the server-list name (edits config + restarts)
   bambo cmd <console-command>          run ANY command on the server console
   bambo config init|show|set|apply|wizard|get|diff|apply-template
@@ -1094,10 +1195,27 @@ COMMANDS
                          start() clears it). Logs to logs/watchdog.log.
     join                 prints the live LAN address to type into a client
     players              server 'list' command output
+    user list|op|deop|whitelist|ban|unban|kick|gamemode
+                         full player management: list online; grant/revoke op;
+                         manage the whitelist; ban/unban with reason; kick with
+                         reason; set a player's gamemode. (Commands require the
+                         server to be running.)
     op add|del|list      operator management (ops.txt / /op)
     whitelist ...        whitelist management (/whitelist)
-    world list|save|tp   world inspection + save-all. create/delete/rename are NOT
-                         supported by PNX's built-in /world; add a MultiWorld plugin.
+    world list|create|rename|delete|default|save|tp
+                         WORLD MANAGEMENT (offline, safe, reversible):
+                         list shows worlds with size and the default marker;
+                         create <name> [--template <world>] copies an existing
+                         world as a new one; rename <old> <new> also fixes the
+                         default pointer; delete <name> [--force] moves the world
+                         into runtime/.trash/worlds (NOT hard-deleted; the default
+                         world refuses deletion until another default is chosen);
+                         default <name> switches the served world (restart applies);
+                         save/tp talk to the running server. All mutating world
+                         operations require the server to be stopped.
+    plugins              list installed plugins (live server)
+    broadcast <msg>      send a message to all players (/say)
+    tps                 server tick rate / performance (live server)
     cmd <text>           send an arbitrary console command (operator pass-through;
                          newlines rejected for safety)
     motd "<name>" ["<sub>"]   set server-list name; edits bambo.conf then deploys and restarts
@@ -1178,6 +1296,10 @@ main() {
         join)     join ;;
         watch)    watch "$@" ;;
         players)  players ;;
+        user)     user "$@" ;;
+        plugins)  plugins ;;
+        broadcast|say) broadcast "$@" ;;
+        tps)      tps ;;
         op)       op "$@" ;;
         whitelist|whl) whitelist "$@" ;;
         world)    world "$@" ;;

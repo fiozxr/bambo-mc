@@ -2,6 +2,31 @@
 
 All notable changes to bambo-mc are documented here (project-initiated work, not upstream PNX).
 
+## [2.3.0] — 2026-11-02 — Worlds + user management (dashboard-driven)
+
+### Added
+- **World management** (`bambo world …`, also in the dashboard):
+  - `list` — worlds with size + default marker
+  - `create <name> [--template <world>]` — copy an existing world into a new one
+  - `rename <old> <new>` — also fixes the default-world pointer when needed
+  - `delete <name> [--force]` — moves the world to `runtime/.trash/worlds` (reversible,
+    never hard-deletes; the default world is protected unless another default is chosen)
+  - `default <name>` — switch the world the server serves (restart applies)
+  - All mutating operations require the server stopped, are name-validated
+    (`[A-Za-z0-9_-]+`) and lock-protected.
+- **User management** (`bambo user …`, also in the dashboard): `list`, `op`/`deop`,
+  `whitelist`, `ban <player> [reason]`, `unban`, `kick <player> [reason]`,
+  `gamemode <0-3> [player]`.
+- **Server utilities** (`bambo plugins`, `bambo broadcast <msg>`, `bambo tps`) + dashboard buttons.
+- Dashboard gained Worlds (create/rename/delete/default + save-all), Users (ban/unban/kick/
+  gamemode/ops), and Utilities (plugins/tps/broadcast) cards.
+
+### Changed
+- Tool/dashboard version bump to 2.3.0; README command table expanded.
+
+### Fixed
+- `world list` exit status was 1 when worlds existed (trailing conditional) — now 0.
+
 ## [2.2.0] — 2026-11-02 — End-user configuration
 
 ### Added

@@ -25,10 +25,12 @@ summary() {
 make_fixture() {
   local base
   base="$(mktemp -d /tmp/bambo-test.XXXXXX)"
-  mkdir -p "$base/runtime/backups" "$base/server"
+  mkdir -p "$base/runtime/backups" "$base/server" "$base/runtime/worlds/world/db"
   cp "$ROOT/server/pnx.yml" "$base/server/pnx.yml"
   cp "$ROOT/server/pnx.yml" "$base/runtime/pnx.yml"
   cp "$ROOT/install.sh" "$base/install.sh"
   cp "$ROOT/config.example" "$base/config.example"
+  printf 'MANIFEST-000000\n' > "$base/runtime/worlds/world/db/CURRENT"
+  : > "$base/runtime/worlds/world/db/MANIFEST-000000"
   echo "$base"
 }

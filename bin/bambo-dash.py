@@ -26,7 +26,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-TOOL_VERSION = "2.2.0"
+TOOL_VERSION = "2.3.0"
 MAX_BODY = 64 * 1024          # request body cap (bytes)
 MAX_ARGS = 8                  # max args in one admin action
 MAX_ARG_LEN = 256             # max length of a single arg
@@ -66,7 +66,7 @@ ACTIONS = {
 # Admin actions run as: bambo <name> <args...>. The dashboard passes argv (never a shell
 # string); bambo itself validates the subcommand and refuses bad input. 'cmd' is the raw
 # operator pass-through - that is why every POST here is token-gated.
-ADMIN = {"players", "op", "whitelist", "world", "cmd", "motd", "config"}
+ADMIN = {"players", "op", "whitelist", "world", "user", "plugins", "broadcast", "tps", "cmd", "motd", "config"}
 
 
 # ---------------- token ----------------
@@ -260,10 +260,44 @@ PAGE_CSS_HTML = """<!doctype html><meta charset=utf-8><title>bambo-mc admin</tit
    <button data-run="whitelist|list">list</button>
    <button data-wl=on>on</button><button data-wl=off>off</button></div>
    <pre id=pwhl style="display:none"></pre></div>
- <div class=card><b>Worlds</b> <button data-run="world|list">list</button>
-   <button data-run="world|save">save-all</button>
-   <small>create/delete/rename need a MultiWorld plugin (PNX built-in only lists/teleports)</small>
+ <div class=card><b>Worlds</b><div class=row>
+   <button data-run="world|list">list</button>
+   <button data-run="world|save">save-all</button></div>
+   <div class=row style="margin-top:8px">
+     <input id=world_new placeholder="new world name">
+     <button id=world_create>create</button>
+     <input id=world_old placeholder="old name"><input id=world_ren placeholder="new name">
+     <button id=world_rename>rename</button></div>
+   <div class=row>
+     <input id=world_def placeholder="set as default world">
+     <button id=world_default>make default</button>
+     <input id=world_del placeholder="delete world">
+     <label><input type=checkbox id=world_del_force> <small>force</small></label>
+     <button id=world_delete>move to trash</button></div>
+   <small>world changes require the server to be stopped; delete moves to runtime/.trash (reversible)</small>
    <pre id=pworld style="display:none"></pre></div>
+ <div class=card><b>Users</b><div class=row>
+   <button data-run="user|list">online list</button>
+   <button data-run="op|list">ops</button></div>
+   <div class=row style="margin-top:8px">
+     <input id=user_ban_name placeholder="player to ban">
+     <button id=user_ban>ban</button>
+     <input id=user_unban_name placeholder="player to unban">
+     <button id=user_unban>unban</button></div>
+   <div class=row>
+     <input id=user_kick_name placeholder="player to kick">
+     <button id=user_kick>kick</button>
+     <select id=user_gm_mode><option value=0>survival</option><option value=1>creative</option><option value=2>adventure</option><option value=3>spectator</option></select>
+     <input id=user_gm_player placeholder="player (blank=all)">
+     <button id=user_gm>gamemode</button></div>
+   <small>ban / unban / kick / gamemode act on the live server</small>
+   <pre id=pusers style="display:none"></pre></div>
+ <div class=card><b>Server utilities</b><div class=row>
+   <button id=plugins>plugins</button>
+   <button id=tps>tps</button>
+   <input id=bc_msg placeholder="message to everyone" style="flex:1">
+   <button id=broadcast>broadcast</button></div>
+   <pre id=pplugins style="display:none"></pre></div>
  <div class=card><b>Console command</b><div class=row>
    <input id=cmdline placeholder="/gamemode creative Steve" style="flex:1">
    <button id=run_cmd>Run</button></div>
@@ -343,6 +377,17 @@ $('#save_motd').onclick=()=>{
   el.textContent='saving + restarting the server (~40s)...';
   run('motd',[a,b],'#pmotd');
 };
+$('#world_create').onclick=()=>{const n=$('#world_new').value.trim(); if(!n){$('#pworld').textContent='enter a name';return;} run('world',['create',n],'#pworld');};
+$('#world_rename').onclick=()=>{const a=$('#world_old').value.trim(), b=$('#world_ren').value.trim(); if(!a||!b){$('#pworld').textContent='enter old and new names';return;} run('world',['rename',a,b],'#pworld');};
+$('#world_delete').onclick=()=>{const n=$('#world_del').value.trim(); if(!n){$('#pworld').textContent='enter a name';return;} const f=$('#world_del_force').checked?'--force':''; run('world',['delete',n,...(f?[f]:[])],'#pworld');};
+$('#world_default').onclick=()=>{const n=$('#world_def').value.trim(); if(!n){$('#pworld').textContent='enter a name';return;} run('world',['default',n],'#pworld');};
+$('#user_ban').onclick=()=>{const n=$('#user_ban_name').value.trim(); if(!n){$('#pusers').textContent='enter a name';return;} run('user',['ban',n],'#pusers');};
+$('#user_unban').onclick=()=>{const n=$('#user_unban_name').value.trim(); if(!n){$('#pusers').textContent='enter a name';return;} run('user',['unban',n],'#pusers');};
+$('#user_kick').onclick=()=>{const n=$('#user_kick_name').value.trim(); if(!n){$('#pusers').textContent='enter a name';return;} run('user',['kick',n],'#pusers');};
+$('#user_gm').onclick=()=>{const m=$('#user_gm_mode').value, n=$('#user_gm_player').value.trim(); run('user',['gamemode',m,...(n?[n]:[])],'#pusers');};
+$('#plugins').onclick=()=>run('plugins',[],'#pplugins');
+$('#tps').onclick=()=>run('tps',[],'#pplugins');
+$('#broadcast').onclick=()=>{const m=$('#bc_msg').value.trim(); if(!m){$('#pplugins').textContent='enter a message';return;} run('broadcast',[m],'#pplugins');};
 refresh();setInterval(refresh,3000);
 </script>"""
 

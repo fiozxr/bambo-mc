@@ -5,7 +5,7 @@ admin tooling for a small group (up to 4 players) on one WiFi / phone hotspot.
 **No port forwarding, no internet account required for players to join.**
 
 ```
-bambo-mc ── v2.0.0 (production hardening)
+bambo-mc ── v2.3.0 (worlds + user management)
 ├── bambo            the control CLI (services, dash, players/op/whitelist/world/cmd,
 │                    config, backup/restore/setup, doctor/health, help/man)
 ├── bin/             dashboard (token-gated, stdlib-only) + LAN probe
@@ -94,7 +94,12 @@ Idempotent: safe to re-run any time; `--dry-run` changes nothing.
 | `bambo dash start\|stop\|status\|logs\|token-new` | admin dashboard |
 | `bambo logs [n]` / `bambo tail` | server console history / live attach |
 | `bambo join` | current join address for clients |
-| `bambo players`, `bambo op …`, `bambo whitelist …`, `bambo world …`, `bambo cmd …` | in-game admin |
+| `bambo players` | list players online |
+| `bambo user list\|op\|deop\|whitelist\|ban\|unban\|kick\|gamemode` | full player management |
+| `bambo op …`, `bambo whitelist …` | quick operator/whitelist control |
+| `bambo world list\|create\|rename\|delete\|default\|save\|tp` | world management (offline, safe, reversible) |
+| `bambo plugins`, `bambo broadcast <msg>`, `bambo tps` | server utilities |
+| `bambo cmd …` | raw console command |
 | `bambo motd "<name>" ["<sub>"]` | set server-list name (edits config, restarts) |
 | `bambo config get\|set\|diff\|apply` | inspect/edit `pnx.yml` safely |
 | `bambo backup [--force]` | timestamped snapshot (worlds+players+config+manifest); newest 10 kept |

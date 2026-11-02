@@ -10,7 +10,7 @@ FIX="$(make_fixture)"
 export BAMBO_ROOT="$FIX"
 
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" version 2>&1)"
-check_contains "$out" "bambo-mc v2.2.0" "version prints tool version"
+check_contains "$out" "bambo-mc v2.3.0" "version prints tool version"
 
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" help 2>&1)"
 check_contains "$out" "bambo" "help runs"
@@ -26,7 +26,7 @@ check_contains "$out" "dash" "status shows dash"
 
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" health --json 2>&1)"
 echo "$out" | python3 -m json.tool >/dev/null 2>&1 && ok "health --json is valid JSON" || fail "health --json invalid"
-check_contains "$out" '"tool_version":"2.2.0"' "health json carries tool_version"
+check_contains "$out" '"tool_version":"2.3.0"' "health json carries tool_version"
 
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" bootstrap --dry-run 2>&1)"
 check_contains "$out" "(dry-run)" "bootstrap --dry-run previews"
@@ -63,9 +63,46 @@ grep -q 'motd: "Test World"' "$FIX/runtime/pnx.yml" && ok "motd deployed" || fai
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" config diff 2>&1)"
 check_contains "$out" "maxPlayers" "config diff reports drift"
 
-# backup refuses while nothing to do? run backup on fixture (no worlds -> ok)
+# ---- worlds ----
+out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" world list 2>&1)"
+check_contains "$out" "world" "world list works"
+
+out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" world create test1 2>&1)"
+[ -d "$FIX/runtime/worlds/test1" ] && ok "world create copied template" || fail "world create failed: $out"
+
+out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" world create test3 2>&1)"
+[ -d "$FIX/runtime/worlds/test3" ] && ok "second world created" || fail "second world create failed: $out"
+
+out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" world rename test1 test2 2>&1)"
+[ -d "$FIX/runtime/worlds/test2" ] && [ ! -d "$FIX/runtime/worlds/test1" ] && ok "world rename works" || fail "world rename failed: $out"
+
+out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" world default test3 2>&1)"
+grep -q 'defaultLevelName: test3' "$FIX/runtime/pnx.yml" && ok "world default updates pnx" || fail "world default failed: $out"
+
+out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" world delete test2 2>&1)"
+[ -d "$FIX/runtime/.trash/worlds" ] && [ ! -d "$FIX/runtime/worlds/test2" ] && ok "world delete moved to trash" || fail "world delete failed: $out"
+
+if BAMBO_ROOT="$FIX" "$ROOT/bambo" world delete test3 >/dev/null 2>&1; then
+  fail "deleting default world should be refused"
+else
+  ok "deleting default world is refused"
+fi
+
+# ---- user/utilities guard when server is down ----
+if BAMBO_ROOT="$FIX" "$ROOT/bambo" user ban someone >/dev/null 2>&1; then
+  fail "user command should require a running server"
+else
+  ok "user commands guard when server down"
+fi
+if BAMBO_ROOT="$FIX" "$ROOT/bambo" plugins >/dev/null 2>&1; then
+  fail "plugins should require a running server"
+else
+  ok "plugins guards when server down"
+fi
+
+# backup snapshots the fixture world now
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" backup 2>&1)"
-check_contains "$out" "nothing to back up" "backup handles missing worlds gracefully"
+check_contains "$out" "snapshot" "backup snapshots fixture worlds"
 
 rm -rf "$FIX"
 summary

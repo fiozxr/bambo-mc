@@ -46,6 +46,11 @@ out="$(curl -s -X POST http://127.0.0.1:$PORT/api/action \
 echo "$out" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("ok") else 1)' \
   && ok "config get action succeeds" || fail "config get action failed: $out"
 
+out="$(curl -s -X POST http://127.0.0.1:$PORT/api/action \
+  -H 'content-type: application/json' -d "{\"token\":\"$TOK\",\"action\":\"world\",\"args\":[\"list\"]}")"
+echo "$out" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("ok") else 1)' \
+  && ok "world list action succeeds" || fail "world list action failed: $out"
+
 # oversized body -> 413
 python3 - "$PORT" <<'PY'
 import json, sys, urllib.request
