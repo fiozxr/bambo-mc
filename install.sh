@@ -228,7 +228,7 @@ if [ "$DRYRUN" = 1 ]; then
 fi
 
 # ensure the server jar (the one large resource) - download+verify only if absent
-local EASK
+EASK=""
 if [ "${ASK:-0}" = 1 ] || { [ "${ASKOFF:-0}" != 1 ] && [ -t 1 ]; }; then
   EASK=1
 else
