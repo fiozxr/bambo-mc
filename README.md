@@ -45,6 +45,19 @@ Full detail: `CHANGELOG.md`.
 
 ## Quick start
 
+**Fresh machine? Use the one-command bootstrap:**
+
+```sh
+bambo bootstrap --start    # after cloning/placing the repo:
+                           # deps (apt/dnf/zypper/pacman) + jar + wrappers +
+                           # nightly backup cron + token + dashboard + server
+```
+
+From inside the repo (same thing, no wrappers needed): `./install.sh --auto --start`.
+Preview with `--dry-run`; if your user can't sudo, run as root or `sudo ./install.sh --auto`.
+
+**Afterwards (or manually):**
+
 ```sh
 ./install.sh              # analyse, install commands into ~/.local/bin, launch dashboard
 bambo doctor              # everything OK? (non-zero exit if issues)
@@ -55,6 +68,19 @@ bambo down
 ```
 
 If the jar is missing: `bambo setup` (downloads + sha256-verifies the newest stable PNX).
+
+### What `bambo bootstrap` does (automatic setup)
+
+| Step | Detail |
+|---|---|
+| 1. Dependencies | installs missing `java` (21+), `tmux`, `python3`, `curl`, `ip` via the distro package manager (apt/dnf/zypper/pacman); needs root or passwordless sudo |
+| 2. Server jar | `bambo setup` — download, sha256-verify, pin state (skips if already present/verified) |
+| 3. Commands | installs `bambo`, `bambo-mc`, `bambo-dash`, `bambo-nettest` wrappers (`~/.local/bin` or `--system`) |
+| 4. Nightly backup cron | adds the 03:30 `stop → backup → start` job if missing (previous crontab saved to `backups/`) |
+| 5. Dashboard token | generates `dash.token` (mode 0600) if missing |
+| 6. Launch | starts the dashboard (always); with `--start` also starts the game server |
+
+Idempotent: safe to re-run any time; `--dry-run` changes nothing.
 
 ## Core usage
 

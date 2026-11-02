@@ -15,10 +15,14 @@
 #   ./install.sh --uninstall    remove wrappers we created
 #   ./install.sh --no-launch    install but do not open the dashboard
 #   ./install.sh --jar          force (re)download the server jar
+#   ./install.sh --auto         automatic setup: ensure deps (apt/dnf/zypper/pacman),
+#                               jar, token, nightly backup cron, wrappers, dashboard
+#   ./install.sh --auto --start   also start the game server after installing
+#   ./install.sh --auto --dry-run preview everything --auto would do (changes nothing)
 set -uo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-}")" 2>/dev/null && pwd || echo "")"
-REPO=""; PREFIX=""; SYSTEM=0; UNINSTALL=0; LAUNCH=1; FORCEJAR=0; CHECK=0
+REPO=""; PREFIX=""; SYSTEM=0; UNINSTALL=0; LAUNCH=1; FORCEJAR=0; CHECK=0; AUTO=0; START=0; DRYRUN=0
 
 # ---- locate the app folder (works run-from-repo AND via 'curl | bash') ----
 locate_repo() {
@@ -32,9 +36,98 @@ locate_repo() {
 
 usage(){ sed -n '2,20p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'; }
 
+# ---- --auto helpers: make the machine ready end-to-end ----
+ensure_deps() {
+  local missing="" tool
+  for tool in java tmux python3 curl ip; do
+    command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+  done
+  if [ -z "$missing" ]; then
+    printf '  deps: all required tools present\n'
+    return 0
+  fi
+  printf '  deps: missing:%s\n' "$missing"
+  if [ "$DRYRUN" = 1 ]; then
+    printf '    (dry-run) would install them via the system package manager\n'
+    return 0
+  fi
+  local pm=""
+  command -v apt-get >/dev/null 2>&1 && pm=apt
+  command -v dnf >/dev/null 2>&1 && pm=dnf
+  command -v zypper >/dev/null 2>&1 && pm=zypper
+  command -v pacman >/dev/null 2>&1 && pm=pacman
+  if [ -z "$pm" ]; then
+    printf '  deps: no supported package manager found; install manually:%s\n' "$missing" >&2
+    return 1
+  fi
+  local sudoer=""
+  if [ "$(id -u)" != 0 ]; then
+    if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+      sudoer="sudo -n"
+    else
+      printf '  deps: need root to install packages - re-run with sudo or as root\n' >&2
+      return 1
+    fi
+  fi
+  case "$pm" in
+    apt)     $sudoer apt-get update -qq || true
+             $sudoer apt-get install -y --no-install-recommends \
+               openjdk-21-jre-headless tmux python3 curl iproute2 ;;
+    dnf)    $sudoer dnf install -y java-21-openjdk-headless tmux python3 curl iproute ;;
+    zypper) $sudoer zypper install -y java-21-openjdk-headless tmux python3 curl iproute2 ;;
+    pacman) $sudoer pacman -S --noconfirm jre21-openjdk-headless tmux python3 curl iproute2 ;;
+  esac
+  local bad=""
+  for tool in java tmux python3 curl ip; do
+    command -v "$tool" >/dev/null 2>&1 || bad="$bad $tool"
+  done
+  if [ -n "$bad" ]; then
+    printf '  deps: still missing after install:%s\n' "$bad" >&2
+    return 1
+  fi
+  printf '  deps: installed OK\n'
+}
+
+ensure_cron() {
+  command -v crontab >/dev/null 2>&1 || { printf '  cron: crontab unavailable - skipping nightly backup job\n'; return 0; }
+  local line="30 3 * * * cd \"$REPO\" && ./bambo stop && ./bambo backup && ./bambo start >> \"$REPO/logs/cron-backup.log\" 2>&1"
+  if crontab -l 2>/dev/null | grep -qF "bambo backup"; then
+    printf '  cron: nightly backup job already installed\n'
+    return 0
+  fi
+  printf '  cron: adding nightly backup job\n'
+  if [ "$DRYRUN" = 1 ]; then
+    printf '    (dry-run) would append: %s\n' "$line"
+    return 0
+  fi
+  mkdir -p "$REPO/backups" "$REPO/logs"
+  local stamp; stamp="$(date +%Y%m%d-%H%M%S)"
+  crontab -l 2>/dev/null > "$REPO/backups/crontab.backup.$stamp" || true
+  { crontab -l 2>/dev/null; echo "$line"; } | crontab -
+  printf '    previous crontab saved to backups/crontab.backup.%s\n' "$stamp"
+}
+
+ensure_token() {
+  if [ -f "$REPO/dash.token" ]; then
+    printf '  token: present (perms %s)\n' "$(stat -c %a "$REPO/dash.token")"
+    return 0
+  fi
+  printf '  token: generating\n'
+  if [ "$DRYRUN" = 1 ]; then
+    printf '    (dry-run) would generate dash.token\n'
+    return 0
+  fi
+  (cd "$REPO" && ./bambo dash token-new) >/dev/null 2>&1 \
+    && printf '    dash.token created\n' \
+    || printf '    (token generation deferred to dashboard first run)\n'
+}
+
 for a in "$@"; do
   case "$a" in
     --check)    CHECK=1 ;;
+    --auto)     AUTO=1 ;;
+    --start)    START=1 ;;
+    --dry-run)  DRYRUN=1 ;;
     --version)  echo "bambo-mc installer"; exit 0 ;;
     --system)   SYSTEM=1 ;;
     --uninstall) UNINSTALL=1 ;;
@@ -109,6 +202,19 @@ T0=$SECONDS
 spin "analysing system and preparing"
 sleep 0.6; spindown
 
+# --auto: make the machine ready end-to-end (deps, cron, token)
+if [ "$AUTO" = 1 ]; then
+  ensure_deps || exit 2
+  ensure_cron
+  ensure_token
+fi
+
+# --dry-run: stop before anything mutates the system
+if [ "$DRYRUN" = 1 ]; then
+  printf '\n  (dry-run) stopping before any changes - nothing was installed or modified\n'
+  exit 0
+fi
+
 # ensure the server jar (the one large resource) - download+verify only if absent
 if [ ! -f "$REPO/runtime/powernukkitx.jar" ] || [ "$FORCEJAR" = 1 ]; then
   spin "downloading and verifying the server (this can take a while)"
@@ -144,3 +250,8 @@ fi
 # keep the loader at least ~3s for a smooth reveal, then finish
 el=$((SECONDS-T0)); [ $el -lt 3 ] && { spin "almost there"; sleep $((3-el)); spindown; }
 banner_done
+
+if [ "$START" = 1 ]; then
+  echo "  starting services (server + dashboard)..."
+  (cd "$REPO" && ./bambo up)
+fi

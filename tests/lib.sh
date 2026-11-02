@@ -28,5 +28,6 @@ make_fixture() {
   mkdir -p "$base/runtime/backups" "$base/server"
   cp "$ROOT/server/pnx.yml" "$base/server/pnx.yml"
   cp "$ROOT/server/pnx.yml" "$base/runtime/pnx.yml"
+  cp "$ROOT/install.sh" "$base/install.sh"
   echo "$base"
 }

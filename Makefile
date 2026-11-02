@@ -4,7 +4,7 @@
 
 SHELL := /bin/bash
 
-.PHONY: help lint test java-test smoke live clean
+.PHONY: help lint test java-test smoke live clean bootstrap
 
 help:
 	@echo "bambo-mc — developer tasks"
@@ -14,6 +14,7 @@ help:
 	@echo "  make java-test   build empty-serve and run all layer self-tests + probes"
 	@echo "  make smoke       dashboard smoke test on a scratch port (start/stop it)"
 	@echo "  make live        full live cycle: doctor, health, up, status, down"
+	@echo "  make bootstrap    automatic setup: deps, jar, wrappers, cron, token, dash"
 	@echo "  make clean       remove java build output"
 
 lint:
@@ -33,6 +34,9 @@ java-test:
 
 smoke:
 	@bash tests/dash_smoke.sh
+
+bootstrap:
+	@bash install.sh --auto
 
 live:
 	@set -e; \

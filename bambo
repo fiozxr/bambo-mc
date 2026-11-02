@@ -14,7 +14,7 @@
 #   - 'doctor' is the first thing to run when something looks wrong.
 set -uo pipefail
 
-BAMBO_VERSION="2.0.0"
+BAMBO_VERSION="2.1.0"
 
 # cron's default PATH is /usr/bin:/bin, which omits /usr/sbin - where `ip` lives.
 # Without this, lan_ip()/join() silently return nothing when run from a cron job.
@@ -707,6 +707,14 @@ version() {
   echo "note : protocol must match your clients; see docs/VERSIONS.md"
 }
 
+bootstrap() {
+  # One-command fresh-machine setup: dependencies, jar, wrappers, nightly cron,
+  # token, dashboard — and optionally the game server (--start).
+  # Delegates to the installer; pass --start / --dry-run / --system / --prefix=…
+  [ -x "$ROOT/install.sh" ] || die "install.sh missing"
+  exec "$ROOT/install.sh" --auto "$@"
+}
+
 doctor() {
   echo "== bambo-mc doctor (v$BAMBO_VERSION) =="
   local rc=0
@@ -813,6 +821,8 @@ bambo (alias: bambo-mc) v$BAMBO_VERSION - control the Bedrock server + admin das
   bambo backup [--force]    snapshot worlds+players (stop the server first)
   bambo restore list|<ts>   roll worlds back to a snapshot
   bambo setup [version]     download/verify the server jar (pins the deployed version)
+  bambo bootstrap [--start] [--dry-run]   automatic fresh-machine setup:
+                          deps + jar + wrappers + nightly cron + token (+ server)
 
   bambo help                this message
   bambo man                 full manual (piped to your pager)
@@ -887,6 +897,12 @@ COMMANDS
                          downloads and verifying the published sha256; records the
                          deployment state. The previous jar is kept as
                          powernukkitx.jar.prev for offline rollback.
+    bootstrap [--start] [--dry-run]
+                         ONE-COMMAND fresh-machine setup: ensures system deps
+                         (apt/dnf/zypper/pacman), the server jar, wrappers, the
+                         nightly backup cron, and the dashboard token; installs
+                         commands; launches the dashboard (and the server with
+                         --start). --dry-run previews without changing anything.
 
 FILES
     runtime/             working dir of the server (jar, pnx.yml, worlds, players)
@@ -946,6 +962,7 @@ main() {
         cmd|console|exec) cmd "$@" ;;
         motd|name) motd "$@" ;;
         config)   config "$@" ;;
+        bootstrap) bootstrap "$@" ;;
         setup)    setup "${1:-}" ;;
         backup)   backup "${1:-}" ;;
         restore)  restore "${1:-list}" ;;

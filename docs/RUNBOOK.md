@@ -3,6 +3,18 @@
 Quick reference for the person who actually runs this thing. Full background: `README.md` and
 `docs/ARCHITECTURE.md`.
 
+## Fresh machine (automatic setup)
+
+```sh
+# from the repo, as your normal user (needs sudo for package installs):
+./install.sh --auto --start      # or: bambo bootstrap --start
+./install.sh --auto --dry-run    # preview what it would do
+```
+
+This ensures dependencies, the server jar (verified+pinned), the global commands, the
+nightly backup cron, and the dashboard token — then (with `--start`) starts everything.
+See `README.md` → "What `bambo bootstrap` does".
+
 ## Normal day
 
 ```sh

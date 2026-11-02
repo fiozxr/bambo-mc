@@ -2,6 +2,26 @@
 
 All notable changes to bambo-mc are documented here (project-initiated work, not upstream PNX).
 
+## [2.1.0] — 2026-11-02 — "Ready to go" automatic setup
+
+### Added
+- **`bambo bootstrap`** (alias of `./install.sh --auto`): one-command fresh-machine setup.
+  Ensures system dependencies (java 21+, tmux, python3, curl, ip via apt/dnf/zypper/pacman),
+  the verified+pinned server jar, the global wrappers, the nightly backup cron, and the
+  dashboard token — then launches the dashboard, and optionally the game server with `--start`.
+- **`install.sh --dry-run`** — true preview mode: prints the full plan, mutates nothing
+  (verified: wrapper checksums, crontab and backups/ unchanged).
+- **`install.sh --start`** — with `--auto`, also starts the game server after installing.
+- `make bootstrap` convenience target.
+
+### Changed
+- Tool/dashboard version bump to 2.1.0.
+- README quick start now leads with the bootstrap flow; RUNBOOK gained a "Fresh machine" section.
+
+### Fixed
+- `--dry-run` previously fell through into the normal install flow (installing wrappers /
+  launching the dashboard); it now exits before any mutation.
+
 ## [2.0.0] — 2026-11-02 — Production-hardening release
 
 Implements the "CEO pass": version control, diagnostics, reproducibility, and security hardening.
