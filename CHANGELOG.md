@@ -2,6 +2,16 @@
 
 All notable changes to bambo-mc are documented here (project-initiated work, not upstream PNX).
 
+## [2.5.4] — 2026-11-02 — One-command curl installer + professional README
+
+### Added
+- `curl -fsSL https://raw.githubusercontent.com/fiozxr/bambo-mc/main/install.sh | bash` now works on a fresh machine: the installer self-downloads the project (git clone or tarball), then proceeds with the interactive version menu and global install.
+- Professional README rewrite: install/quick-start/features/CLI/config/backups/security/layout/dev docs.
+
+### Changed
+- Version bump to 2.5.4.
+
+
 ## [2.5.3] — 2026-11-02 — Plain installer asks; menu version picker
 
 ### Changed

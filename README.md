@@ -1,211 +1,171 @@
 # bambo-mc
 
-> Cross-platform Minecraft Bedrock server from one mobile hotspot / WiFi, with a GUI.
+> Cross-platform Minecraft Bedrock server from one mobile hotspot / WiFi, with a GUI.  
 > No Xbox account required, no port forwarding.
 
-A production-hardened, self-hosted **Minecraft Bedrock server** (PowerNukkitX) plus
-admin tooling for a small group (up to 4 players) on one WiFi / phone hotspot.
-**No port forwarding, no internet account required for players to join.**
+**bambo-mc** is a production-hardened, self-hosted **Minecraft Bedrock server** + admin
+platform for a small group (up to ~20 players) on one WiFi / phone hotspot. It bundles the
+server engine (PowerNukkitX), a full control CLI, a token-gated web dashboard, automatic
+backups, an update system, and a one-command installer.
 
-```
-bambo-mc ── v2.5.0 (PNX 3.0.6 / protocol 2225)
-├── bambo            the control CLI (services, dash, players/op/whitelist/world/cmd,
-│                    config, backup/restore/setup, doctor/health, help/man)
-├── bin/             dashboard (token-gated, stdlib-only) + LAN probe
-├── install.sh       system-wide wrapper installer (user or system, or --check)
-├── server/pnx.yml   tracked config template (baseline for `bambo config diff`)
-├── runtime/         [git-ignored] live server: jar, worlds, players, backups, state
-├── empty-serve/     our from-scratch Bedrock server (MIT, learning project)
-├── forks/           [git-ignored] downloaded PowerNukkitX source (reference only)
-├── docs/            architecture, version alignment, runbook
-├── deploy/          optional systemd unit templates
-├── tests/           test suite (make test / make live)
-└── .github/         CI (CLI checks + Java layer tests)
+---
+
+## Install (one command)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/fiozxr/bambo-mc/main/install.sh | bash
 ```
 
-> **Two engines, two licenses.** The *running* server is **PowerNukkitX 3.0.5**
-> (LGPL-3.0) in `runtime/`. `empty-serve/` is a **separate, original, MIT-licensed**
-> Bedrock server we are writing from scratch — it is **not playable yet** (see its
-> own README). `NOTICE` records provenance; never conflate the two.
+That downloads the project, installs everything globally (commands, server jar, dashboard
+token, nightly backup cron), and — when run in a terminal — **asks which server version**
+you want (matching your client, latest stable, or a specific release). Finish with:
 
-## What changed in v2 (production pass)
+```sh
+bambo start
+```
 
-| Area | What was done |
-|---|---|
-| Version control | repository initialized; `.gitignore` protects secrets/runtime data |
-| Reproducibility | `bambo setup` pins the deployment in `runtime/bambo.state.json` (tag, sha256, protocol, client); keeps the previous jar as `powernukkitx.jar.prev` |
-| Diagnostics | `bambo doctor` (self-check) and `bambo health --json` (monitoring) |
-| Config control | `bambo config get/set/diff/apply` — comment-preserving YAML-safe edits; template vs live drift view |
-| Concurrency | flock-based locking on start/stop/backup/restore/setup |
-| Backups | each snapshot now carries `manifest.json` and is integrity-checked automatically; restore list shows size/manifest |
-| Availability | optional `bambo watch` watchdog (restarts crashed server unless intentionally stopped) |
-| Dashboard | atomic token file + `BAMBO_DASH_TOKEN` override, `bambo dash token-new` rotation, per-IP brute-force rate limiting, audit log (`logs/dash-audit.log`), request log, security headers, request cap, graceful shutdown |
-| Tests/CI | `tests/` suite (17 CLI checks, 15 dashboard API checks), empty-serve layer tests, GitHub Actions workflow |
-| Docs | `docs/RUNBOOK.md`, `SECURITY.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, systemd templates |
-| Fixes | ping-log printf bug in empty-serve; README/crontab log path mismatch; duplicate headings; dashboard token write race |
+Alternatives:
 
-Full detail: `CHANGELOG.md`.
+```sh
+# clone + install manually
+git clone https://github.com/fiozxr/bambo-mc.git && cd bambo-mc && ./install.sh
+
+# system-wide (root) install
+sudo ./install.sh --system
+
+# preview what the automatic installer would do
+curl -fsSL https://raw.githubusercontent.com/fiozxr/bambo-mc/main/install.sh | bash -s -- --auto --dry-run
+```
+
+Requirements: Linux, `bash`, `curl`, `tar` (installer fetches the rest: Java 21+, tmux,
+python3, iproute2 — via apt/dnf/zypper/pacman).
+
+---
 
 ## Quick start
 
-**Fresh machine? Use the one-command bootstrap:**
-
 ```sh
-bambo bootstrap --start    # after cloning/placing the repo:
-                           # deps (apt/dnf/zypper/pacman) + jar + wrappers +
-                           # nightly backup cron + token + dashboard + server
-```
-
-From inside the repo (same thing, no wrappers needed): `./install.sh --auto --start`.
-Preview with `--dry-run`; if your user can't sudo, run as root or `sudo ./install.sh --auto`.
-
-**Afterwards (or manually):**
-
-```sh
-./install.sh              # analyse, install commands into ~/.local/bin, launch dashboard
-bambo doctor              # everything OK? (non-zero exit if issues)
-bambo up                  # start server + dashboard
-bambo join                # the address to type into a client (changes with network!)
+bambo bootstrap --start   # full automatic setup (deps + server + cron + token + start)
+bambo doctor              # self-diagnostics
+bambo join                # the address players type into the client (changes with network!)
 bambo status
-bambo down
 ```
 
-If the jar is missing: `bambo setup` (downloads + sha256-verifies the newest stable PNX).
+After install, `bambo` (and `bambo-mc`, `bambo-dash`, `bambo-nettest`) are global.
 
-### What `bambo bootstrap` does (automatic setup)
+---
 
-| Step | Detail |
+## Features
+
+| Area | Highlights |
 |---|---|
-| 1. Dependencies | installs missing `java` (21+), `tmux`, `python3`, `curl`, `ip` via the distro package manager (apt/dnf/zypper/pacman); needs root or passwordless sudo |
-| 2. Server jar | `bambo setup` — download, sha256-verify, pin state (skips if already present/verified) |
-| 3. Commands | installs `bambo`, `bambo-mc`, `bambo-dash`, `bambo-nettest` wrappers (`~/.local/bin` or `--system`) |
-| 4. Nightly backup cron | adds the 03:30 `stop → backup → start` job if missing (previous crontab saved to `backups/`) |
-| 5. Dashboard token | generates `dash.token` (mode 0600) if missing |
-| 6. Launch | starts the dashboard (always); with `--start` also starts the game server |
+| Server engine | PowerNukkitX (Bedrock). Pinned, sha256-verified releases; previous jar kept for rollback |
+| Worlds | list / create / rename / delete / set-default / trash (undo). Offline-safe, reversible |
+| Players | ban / unban / kick / gamemode / operators / whitelist / player info / online list |
+| Console | full interactive console, broadcast, plugins list, TPS |
+| Config | one friendly file `bambo.conf` + interactive wizard + validated apply |
+| Backups | nightly automatic snapshots (worlds+players+config+manifest), retention, restore |
+| Updates | `bambo update check/apply [--ask]` — upstream-aware, safe upgrade path |
+| Dashboard | web UI at http://127.0.0.1:8787 (token-gated, audited, rate-limited) |
+| Monitoring | `bambo health --json`, doctor, optional watchdog auto-restart, webhook alerts |
+| Install | one-command bootstrap with interactive version & config prompts |
+| Ops | scheduled daily restart, audit log, systemd templates, CI, tests |
 
-Idempotent: safe to re-run any time; `--dry-run` changes nothing.
-Use `bambo bootstrap --ask` (or `install.sh --auto --ask`) to choose between the server release matching your installed client version and the latest stable. The version prompt is ON by default during interactive installs; add `--no-ask` to always take the latest stable. Upgrades can also ask: `bambo update --ask`.
+---
 
-## Core usage
+## CLI reference (common)
 
-| Command | What it does |
-|---|---|
-| `bambo up / down` | start/stop **all** services (server + dashboard) |
-| `bambo start / stop / restart` | game server only (stop waits for world saves; force-kills only after 40s grace in cron) |
-| `bambo status` | server + dashboard status, pinned PNX version |
-| `bambo health [--json]` | health summary / machine-readable JSON |
-| `bambo doctor` | self-diagnostics (tools, Java 21+, network, config, cron, perms) |
-| `bambo dash start\|stop\|status\|logs\|token-new` | admin dashboard |
-| `bambo logs [n]` / `bambo tail` | server console history / live attach |
-| `bambo join` | current join address for clients |
-| `bambo players` | list players online |
-| `bambo user list\|op\|deop\|whitelist\|ban\|unban\|kick\|gamemode` | full player management |
-| `bambo op …`, `bambo whitelist …` | quick operator/whitelist control |
-| `bambo world list\|create\|rename\|delete\|default\|save\|tp` | world management (offline, safe, reversible) |
-| `bambo plugins`, `bambo broadcast <msg>`, `bambo tps` | server utilities |
-| `bambo update check\|apply` | check upstream PNX / safe upgrade (backup + install + restart) |
-| `bambo maintenance status\|on\|off` | scheduled daily auto-restart (04:00) |
-| `bambo audit [n]` | recent dashboard actions |
-| `bambo docs [README\|runbook\|security]` | open local docs |
-| `bambo cmd …` | raw console command |
-| `bambo motd "<name>" ["<sub>"]` | set server-list name (edits config, restarts) |
-| `bambo config get\|set\|diff\|apply` | inspect/edit `pnx.yml` safely |
-| `bambo backup [--force]` | timestamped snapshot (worlds+players+config+manifest); newest 10 kept |
-| `bambo restore list\|<ts>` | list or roll back to a snapshot (reversible) |
-| `bambo setup [version]` | download/verify/pin the server jar (rollback: `bambo setup 3.0.5`) |
-| `bambo watch [--once] [--interval=N]` | optional watchdog |
-
-## Configuration (for end users)
-
-Everything you usually want to change lives in **one file: `bambo.conf`**
-(auto-created from `config.example` by `bambo config init`; git-ignored).
-
-| Command | Purpose |
-|---|---|
-| `bambo config wizard` | interactive prompts, no config knowledge needed (add `--defaults` to accept current settings non-interactively) |
-| `bambo config show` | show the effective settings |
-| `bambo config set <KEY> <value>` | change one setting safely, e.g. `bambo config set BAMBO_MAX_PLAYERS 10` |
-| `bambo config apply` | validate + deploy your config to the server (`--restart` restarts it) |
-| `bambo config init` | (re)create `bambo.conf` from the example |
-| `bambo motd "<name>" ["<sub>"]` | shortcut to change the server name (updates config + deploys + restarts) |
-
-Example file (`bambo.conf`, `KEY=value`, comments welcome):
-
-```
-BAMBO_SERVER_NAME=bambo-mc        # name shown in the client list
-BAMBO_SUB_NAME=family server      # subtitle
-BAMBO_MAX_PLAYERS=20              # 1-1000
-BAMBO_XBOX_AUTH=false             # false = offline mode (trusted LAN)
-BAMBO_DIFFICULTY=1                # 0=peaceful 1=easy 2=normal 3=hard
-BAMBO_GAMEMODE=0                  # 0=survival 1=creative 2=adventure 3=spectator
-BAMBO_VIEW_DISTANCE=8             # chunks (2-32)
-BAMBO_PVP=true
-BAMBO_ENABLE_METRICS=false        # keep false
-BAMBO_HEAP=1536M                  # server memory
-BAMBO_KEEP=10                     # backups kept
-BAMBO_DASH_HOST=127.0.0.1        # dashboard address (0.0.0.0 exposes it on the LAN)
-BAMBO_DASH_PORT=8787
-#BAMBO_DASH_TOKEN=               # optional fixed dashboard token
+```text
+bambo up | down | status | restart      # services
+bambo start | stop | logs | tail        # game server / console
+bambo join                              # current join IP:port
+bambo doctor | health [--json]          # diagnostics / monitoring
+bambo setup [version] | setup --menu     # install server version (menu picker)
+bambo update check | apply [--ask]      # upstream-aware upgrades
+bambo config init | show | set | apply | wizard
+bambo world list|create|rename|delete|default|trash|save|tp
+bambo user list|info|op|deop|whitelist|ban|unban|kick|gamemode
+bambo cmd "<console command>" | broadcast "<msg>" | plugins | tps
+bambo backup | restore list|<ts>
+bambo maintenance status|on|off          # daily auto-restart (04:00)
+bambo audit [n] | docs [README|runbook|security]
 ```
 
-Validation happens at `apply` (ranges, booleans) with clear errors. The lower-level
-`bambo config get/diff` still talk to the live `runtime/pnx.yml` (see `docs/ARCHITECTURE.md`).
+Run `bambo man` for the full manual.
 
-## Nightly backups
+---
 
-Installed by default (03:30):
+## Configuration
 
+All user settings live in one file: **`bambo.conf`** (auto-created from `config.example`;
+`KEY=value`, comments welcome). Edit it, or use the wizard:
+
+```sh
+bambo config wizard --apply    # interactive questions
+bambo config set BAMBO_MAX_PLAYERS 10
+bambo config apply [--restart]
 ```
-30 3 * * * cd /home/fiozxr/bambo-mc && ./bambo stop && ./bambo backup && ./bambo start >> /home/fiozxr/bambo-mc/logs/cron-backup.log 2>&1
-```
 
-Check `logs/cron-backup.log` after a night; `doctor` reports if the cron line is missing.
-Backups land in `runtime/backups/<timestamp>/`; the newest `BAMBO_KEEP` (default 10) are kept.
-See `docs/RUNBOOK.md` for the restore drill.
+Key settings: server name/subtitle, max players, Xbox auth, allowlist, difficulty, gamemode,
+view distance, PvP, metrics, heap, backup retention, dashboard host/port, webhook URL.
+
+---
+
+## Backups
+
+Nightly at 03:30: `bambo stop && bambo backup && bambo start` (cron-managed). Snapshots
+to `runtime/backups/<ts>/` with a manifest + integrity check; newest 10 kept
+(`BAMBO_KEEP`). Restore: `bambo restore list` → `bambo restore <ts>`.
+
+---
 
 ## Security
 
-- The dashboard binds **127.0.0.1** by default and is token-gated (`dash.token`,
-  mode 0600, auto-generated, rotation via `bambo dash token-new`). Exposing it on the
-  LAN (`BAMBO_DASH_HOST=0.0.0.0`) lets anyone holding the token control the server —
-  do only on a trusted network.
-- `xboxAuth: false` (offline mode) for the family LAN — player identity is self-reported;
-  **do not expose this server to the public internet**.
-- Rate-limited auth, audit log, request cap, security headers, no secrets in git.
+- Dashboard binds 127.0.0.1 by default; token (`dash.token`, mode 0600), rotation via
+  `bambo dash token-new`, per-IP rate limiting, audit log, security headers.
+- Offline mode (`xboxAuth: false`) is for trusted LANs — do not expose to the public internet.
+- No secrets in git (`dash.token`, `bambo.conf`, runtime data are ignored).
 - See `SECURITY.md`.
 
-## Version alignment
+---
 
-Bedrock clients and servers must share a **protocol number**. Current deployment:
-PNX **3.0.6** ↔ Bedrock **1.26.60** ↔ protocol **2225**. When a client auto-updates
-past the server, see `docs/VERSIONS.md` for the cheapest fix.
+## Project layout
 
-## Layout notes
+```text
+bambo            control CLI (everything)
+install.sh        installer / one-command bootstrap
+bin/             dashboard (stdlib-only) + LAN probe
+config.example    template for bambo.conf
+server/pnx.yml    tracked engine config template
+runtime/          [machine-local] live server data (jar, worlds, players, backups, state)
+empty-serve/      our from-scratch Bedrock server (MIT — learning project, not playable yet)
+forks/           [reference only] downloaded PowerNukkitX source
+logs/            cron / dashboard / audit / watchdog logs
+docs/            architecture, version alignment, runbook
+deploy/          systemd unit templates
+tests/ + .github/  test suite + CI
+```
 
-- `runtime/` is the engine's working directory (PNX resolves data paths from cwd) —
-  `bambo` always launches from inside it.
-- `server/pnx.yml` is the tracked template; `runtime/pnx.yml` is live. They are allowed
-  to differ (live is customized); `bambo config diff` shows you exactly how.
-- `logs/` holds cron, dashboard, audit and watchdog logs (server logs live in
-  `runtime/logs/`).
-- `forks/empty-serve` is the downloaded PNX source clone (own git repo, LGPL) — kept
-  only as a reference; it is excluded from this repo's git.
+Licensing: engine runtime is PowerNukkitX (LGPL-3.0); this project's own code is MIT.
+See `NOTICE`.
+
+---
 
 ## Development
 
 ```sh
-make lint           # bash -n + py_compile + shellcheck (if installed)
-make test           # non-live suite (CLI + dashboard API + empty-serve layers)
-make smoke          # dashboard only
-make live           # full cycle on the real server (starts/stops it)
-make java-test      # empty-serve layers only
+make lint        # bash -n + py_compile + shellcheck
+make test        # CLI + dashboard API + empty-serve layer tests
+make live        # full cycle on a real server (starts/stops it)
 ```
 
-CI runs the same checks on every push (`.github/workflows/ci.yml`).
+CI runs the same checks on every push. See `CONTRIBUTING.md`.
 
-## Going further
+---
 
-- **systemd**: templates in `deploy/` (do not mix with tmux mode; see headers).
-- **Monitoring**: `bambo health --json | grep '"up":true'` from cron, or a 5-minute
-  timer; see `docs/RUNBOOK.md`.
-- **Docs**: `docs/ARCHITECTURE.md`, `docs/VERSIONS.md`, `docs/RUNBOOK.md`.
+## Docs & support
+
+- Runbook: `docs/RUNBOOK.md` (or `bambo docs runbook`)
+- Version alignment: `docs/VERSIONS.md`
+- Security: `SECURITY.md` · Changelog: `CHANGELOG.md`
+- Issues/feedback: https://github.com/fiozxr/bambo-mc/issues

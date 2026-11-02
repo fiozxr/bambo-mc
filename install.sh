@@ -43,6 +43,31 @@ locate_repo() {
 usage(){ sed -n '2,20p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'; }
 
 # ---- --auto helpers: make the machine ready end-to-end ----
+fetch_repo() {
+  local dest="${BAMBO_INSTALL_DIR:-$HOME/bambo-mc}"
+  if [ -x "$dest/bambo" ]; then
+    echo "$dest"
+    return 0
+  fi
+  echo "  bambo-mc is not installed here yet - downloading it to $dest"
+  if [ "$DRYRUN" = 1 ]; then
+    echo "    (dry-run) would download to $dest"
+    echo "$dest"
+    return 0
+  fi
+  mkdir -p "$(dirname "$dest")"
+  local tmp; tmp="$dest.tmp.$$"
+  rm -rf "$tmp"
+  if command -v git >/dev/null 2>&1; then
+    git clone -q --depth 1 https://github.com/fiozxr/bambo-mc.git "$tmp" 2>/dev/null \
+      || { rm -rf "$tmp"; curl -fsSL https://github.com/fiozxr/bambo-mc/archive/refs/heads/main.tar.gz | tar -xz -C "$(dirname "$tmp")" && mv "$(dirname "$tmp")/bambo-mc-main" "$tmp"; }
+  else
+    curl -fsSL https://github.com/fiozxr/bambo-mc/archive/refs/heads/main.tar.gz | tar -xz -C "$(dirname "$tmp")" && mv "$(dirname "$tmp")/bambo-mc-main" "$tmp"
+  fi
+  [ -x "$tmp/bambo" ] || { rm -rf "$tmp"; echo "  download failed (network?) - see https://github.com/fiozxr/bambo-mc" >&2; return 1; }
+  mv "$tmp" "$dest"
+  echo "$dest"
+}
 ensure_deps() {
   local missing="" tool
   for tool in java tmux python3 curl ip; do
@@ -189,9 +214,12 @@ banner_done(){
 }
 
 if [ "$UNINSTALL" = 1 ]; then echo "bambo-mc uninstaller"; uninstall; exit 0; fi
-
 REPO="$(locate_repo)"
+if [ -z "$REPO" ] || [ ! -x "$REPO/bambo" ]; then
+  REPO="$(fetch_repo)" || exit 1
+fi
 [ -f "$REPO/bambo" ] || { printf 'bambo install: app folder not found (tried the script dir, ./ and ~/bambo-mc).\nRun install.sh from inside the repo or set BAMBO_REPO=/path/to/bambo-mc.\n' >&2; exit 1; }
+
 
 # ---------- phase 1: analyse (fast, shown immediately) ----------
 printf '\033[1m  bambo-mc installer\033[0m\n'
