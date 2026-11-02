@@ -121,7 +121,7 @@ ensure_token() {
     printf '    (dry-run) would generate dash.token\n'
     return 0
   fi
-  (cd "$REPO" && BAMBO_ROOT= ./bambo dash token-new) >/dev/null 2>&1 \
+  (cd "$REPO" && env -u BAMBO_ROOT ./bambo dash token-new) >/dev/null 2>&1 \
     && printf '    dash.token created\n' \
     || printf '    (token generation deferred to dashboard first run)\n'
 }
