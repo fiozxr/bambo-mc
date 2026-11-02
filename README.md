@@ -1,5 +1,8 @@
 # bambo-mc
 
+> Cross-platform Minecraft Bedrock server from one mobile hotspot / WiFi, with a GUI.
+> No Xbox account required, no port forwarding.
+
 A production-hardened, self-hosted **Minecraft Bedrock server** (PowerNukkitX) plus
 admin tooling for a small group (up to 4 players) on one WiFi / phone hotspot.
 **No port forwarding, no internet account required for players to join.**
