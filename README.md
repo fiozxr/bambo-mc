@@ -99,6 +99,10 @@ Idempotent: safe to re-run any time; `--dry-run` changes nothing.
 | `bambo op …`, `bambo whitelist …` | quick operator/whitelist control |
 | `bambo world list\|create\|rename\|delete\|default\|save\|tp` | world management (offline, safe, reversible) |
 | `bambo plugins`, `bambo broadcast <msg>`, `bambo tps` | server utilities |
+| `bambo update check\|apply` | check upstream PNX / safe upgrade (backup + install + restart) |
+| `bambo maintenance status\|on\|off` | scheduled daily auto-restart (04:00) |
+| `bambo audit [n]` | recent dashboard actions |
+| `bambo docs [README\|runbook\|security]` | open local docs |
 | `bambo cmd …` | raw console command |
 | `bambo motd "<name>" ["<sub>"]` | set server-list name (edits config, restarts) |
 | `bambo config get\|set\|diff\|apply` | inspect/edit `pnx.yml` safely |

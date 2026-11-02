@@ -2,6 +2,30 @@
 
 All notable changes to bambo-mc are documented here (project-initiated work, not upstream PNX).
 
+## [2.4.0] — 2026-11-02 — Invented the missing pieces
+
+### Added
+- **`bambo update check|apply`** — upstream awareness: compares the pinned PNX version
+  against the latest GitHub release (`check`); `apply` performs the safe upgrade path
+  (stop → backup → verified install → restart only if it was running).
+- **`bambo world trash list|restore|purge`** — deleted worlds are recoverable:
+  list trash, restore by world name or full id (unique-match), purge permanently.
+- **`bambo user info <player>`** — operator / whitelist / banned dossier.
+- **Webhook notifications** — optional `BAMBO_WEBHOOK_URL` (config) sends JSON alerts
+  on server start/stop, backup completion, and watchdog crash-restarts.
+- **`bambo maintenance status|on|off`** — scheduled daily auto-restart at 04:00
+  (cron-managed, reversible, crontab backed up).
+- **`bambo audit [n]`** — recent dashboard actions; **`bambo docs [README|runbook|security]`**
+  — documentation from the shell.
+- `health --json` now also reports `backups` count and `disk_free_kb`.
+
+### Changed
+- Tool/dashboard version bump to 2.4.0; README/usage/man updated.
+- `user gamemode` now validates 0–3.
+
+### Fixed
+- World-trash restore parses the timestamped id correctly for names containing `-`.
+
 ## [2.3.0] — 2026-11-02 — Worlds + user management (dashboard-driven)
 
 ### Added

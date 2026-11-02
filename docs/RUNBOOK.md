@@ -77,6 +77,10 @@ Common failure → fix:
 
 ## Maintenance
 
+- **Version updates**: `bambo update check` (compares installed vs upstream), then
+  `bambo update apply` (automatic safe upgrade: stop → backup → install → restart).
+  The update check on 2026-11-02 found PNX 3.0.6 available (we run 3.0.5).
+- **Scheduled daily restart**: `bambo maintenance on|off|status` (04:00 cron toggle).
 - **Version rollback**: `bambo setup 3.0.5` (or keep the previous jar, which setup preserves as
   `powernukkitx.jar.prev`).
 - **Config**: `bambo config diff` shows drift from the tracked template; `bambo config set motd "X"`

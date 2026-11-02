@@ -30,6 +30,7 @@ make_fixture() {
   cp "$ROOT/server/pnx.yml" "$base/runtime/pnx.yml"
   cp "$ROOT/install.sh" "$base/install.sh"
   cp "$ROOT/config.example" "$base/config.example"
+  [ -f "$ROOT/docs/RUNBOOK.md" ] && mkdir -p "$base/docs" && cp "$ROOT/docs/RUNBOOK.md" "$base/docs/RUNBOOK.md"
   printf 'MANIFEST-000000\n' > "$base/runtime/worlds/world/db/CURRENT"
   : > "$base/runtime/worlds/world/db/MANIFEST-000000"
   echo "$base"

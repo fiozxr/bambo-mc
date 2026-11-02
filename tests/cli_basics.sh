@@ -10,7 +10,7 @@ FIX="$(make_fixture)"
 export BAMBO_ROOT="$FIX"
 
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" version 2>&1)"
-check_contains "$out" "bambo-mc v2.3.0" "version prints tool version"
+check_contains "$out" "bambo-mc v2.4.0" "version prints tool version"
 
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" help 2>&1)"
 check_contains "$out" "bambo" "help runs"
@@ -26,7 +26,7 @@ check_contains "$out" "dash" "status shows dash"
 
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" health --json 2>&1)"
 echo "$out" | python3 -m json.tool >/dev/null 2>&1 && ok "health --json is valid JSON" || fail "health --json invalid"
-check_contains "$out" '"tool_version":"2.3.0"' "health json carries tool_version"
+check_contains "$out" '"tool_version":"2.4.0"' "health json carries tool_version"
 
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" bootstrap --dry-run 2>&1)"
 check_contains "$out" "(dry-run)" "bootstrap --dry-run previews"
@@ -98,6 +98,32 @@ if BAMBO_ROOT="$FIX" "$ROOT/bambo" plugins >/dev/null 2>&1; then
   fail "plugins should require a running server"
 else
   ok "plugins guards when server down"
+fi
+
+# ---- invented features ----
+out="$(BAMBO_ROOT="$FIX" BAMBO_UPDATE_OFFLINE=1 "$ROOT/bambo" update check 2>&1)"
+check_contains "$out" "installed:" "update check runs offline"
+
+out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" maintenance status 2>&1)"
+check_contains "$out" "auto-restart" "maintenance status works"
+
+out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" audit 2>&1)"
+check_contains "$out" "no audit log" "audit viewer handles absence"
+
+out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" docs runbook 2>&1)"
+check_contains "$out" "# Runbook" "docs runbook opens"
+
+out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" user info Steve 2>&1)"
+check_contains "$out" "player: Steve" "user info runs"
+check_contains "$out" "operator: no" "user info defaults"
+
+out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" world trash restore test2 2>&1)"
+[ -d "$FIX/runtime/worlds/test2" ] && ok "world trash restore works" || fail "world trash restore failed: $out"
+
+if BAMBO_ROOT="$FIX" "$ROOT/bambo" world trash purge nope >/dev/null 2>&1; then
+  fail "purge unknown should fail"
+else
+  ok "purge guards unknown"
 fi
 
 # backup snapshots the fixture world now

@@ -14,7 +14,7 @@
 #   - 'doctor' is the first thing to run when something looks wrong.
 set -uo pipefail
 
-BAMBO_VERSION="2.3.0"
+BAMBO_VERSION="2.4.0"
 
 # cron's default PATH is /usr/bin:/bin, which omits /usr/sbin - where `ip` lives.
 # Without this, lan_ip()/join() silently return nothing when run from a cron job.
@@ -25,7 +25,7 @@ ROOT="${BAMBO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 
 # ---- user configuration (bambo.conf) ----
 CONF="$ROOT/bambo.conf"
-CONFIG_KEYS="BAMBO_SERVER_NAME BAMBO_SUB_NAME BAMBO_MAX_PLAYERS BAMBO_XBOX_AUTH BAMBO_ALLOWLIST BAMBO_DIFFICULTY BAMBO_GAMEMODE BAMBO_VIEW_DISTANCE BAMBO_PVP BAMBO_ENABLE_METRICS BAMBO_HEAP BAMBO_KEEP BAMBO_DASH_HOST BAMBO_DASH_PORT BAMBO_DASH_TOKEN"
+CONFIG_KEYS="BAMBO_SERVER_NAME BAMBO_SUB_NAME BAMBO_MAX_PLAYERS BAMBO_XBOX_AUTH BAMBO_ALLOWLIST BAMBO_DIFFICULTY BAMBO_GAMEMODE BAMBO_VIEW_DISTANCE BAMBO_PVP BAMBO_ENABLE_METRICS BAMBO_HEAP BAMBO_KEEP BAMBO_DASH_HOST BAMBO_DASH_PORT BAMBO_DASH_TOKEN BAMBO_WEBHOOK_URL"
 if [ -f "$CONF" ]; then
   while IFS='=' read -r _k _v; do
     _k="${_k//[[:space:]]/}"
@@ -177,6 +177,7 @@ start() {
   lock_release
   if [ -n "$ok" ]; then
     echo "READY - listening on UDP $PORT"
+    notify start "server ready on UDP $PORT"
   elif tmux has-session -t "$SESSION" 2>/dev/null; then
     echo "still booting; watch with ./bambo tail"
   else
@@ -201,7 +202,7 @@ stop() {
   local i=0
   while [ $i -lt 40 ]; do
     tmux has-session -t "$SESSION" 2>/dev/null || {
-      echo "stopped cleanly"; touch "$INTENTIONAL_STOP"; lock_release; return 0; }
+      echo "stopped cleanly"; touch "$INTENTIONAL_STOP"; notify stop "server stopped cleanly"; lock_release; return 0; }
     sleep 1; i=$((i+1))
   done
   # World saves can take a while on a slow disk; killing early risks losing chunk edits.
@@ -211,6 +212,7 @@ stop() {
     # make ./bambo backup refuse. We already gave it 40s to save.
     echo "  no terminal available (cron?) - forcing stop after ${i}s grace"
     tmux kill-session -t "$SESSION" 2>/dev/null; echo "stopped (forced)"
+    notify stop "server stopped (forced after grace)"
   elif [ "$a" = "y" ] || [ "$a" = "Y" ]; then
     tmux kill-session -t "$SESSION" 2>/dev/null; echo "killed"
   else
@@ -243,11 +245,14 @@ status_json() {
   is_up && up="true"
   dash_up && dup="true"
   ss -lun 2>/dev/null | grep -qE ":${PORT}" && bound="true"
-  local tag proto client ip
+  local tag proto client ip bc dfree
   tag="$(state_get tag)"; proto="$(state_get protocol)"; client="$(state_get client_version)"
   ip="$(lan_ip)"
-  printf '{"tool_version":"%s","up":%s,"dash_up":%s,"port_bound":%s,"pnx_tag":"%s","protocol":"%s","client_version":"%s","join_ip":"%s"}\n' \
-    "$BAMBO_VERSION" "$up" "$dup" "$bound" "$tag" "$proto" "$client" "$ip"
+  bc="$(ls -1d "$SRV/backups"/[0-9]* 2>/dev/null | wc -l)"
+  dfree="$(df -P "$ROOT" 2>/dev/null | awk 'NR==2{print $4}')"
+  dfree="${dfree:-0}"
+  printf '{"tool_version":"%s","up":%s,"dash_up":%s,"port_bound":%s,"pnx_tag":"%s","protocol":"%s","client_version":"%s","join_ip":"%s","backups":%s,"disk_free_kb":"%s"}\n' \
+    "$BAMBO_VERSION" "$up" "$dup" "$bound" "$tag" "$proto" "$client" "$ip" "$bc" "$dfree"
 }
 
 health() {
@@ -322,6 +327,7 @@ watch() {
       elif [ -f "$JAR" ]; then
         restarts=$((restarts+1))
         echo "$(date -Is) SERVER DOWN - restarting (attempt #$restarts)" >> "$WATCHDOG_LOG"
+        notify crash "server was down; restart attempted (#$restarts)"
         start >/dev/null 2>&1 || echo "$(date -Is) restart FAILED" >> "$WATCHDOG_LOG"
       else
         echo "$(date -Is) jar missing - nothing to restart" >> "$WATCHDOG_LOG"
@@ -498,9 +504,10 @@ world() {
     rename) [ $# -ge 2 ] || die "usage: bambo world rename <old> <new>"; world_rename "$1" "$2" ;;
     delete|remove) [ $# -ge 1 ] || die "usage: bambo world delete <name> [--force]"; world_delete "$1" "${2:-}" ;;
     default) [ $# -ge 1 ] || die "usage: bambo world default <name>"; world_default "$1" ;;
+    trash) world_trash "$@" ;;
     save)   console "/save-all" ;;
     tp)     [ $# -ge 1 ] || die "usage: bambo world tp <world>"; console "/world tp $*" ;;
-    *)      die "world: use list|create|rename|delete|default|save|tp" ;;
+    *)      die "world: use list|create|rename|delete|default|trash|save|tp" ;;
   esac
 }
 
@@ -515,13 +522,211 @@ user() {
     ban)   [ $# -ge 1 ] || die "usage: bambo user ban <player> [reason]"; console "/ban $*" ;;
     unban|pardon) [ $# -ge 1 ] || die "usage: bambo user unban <player>"; console "/pardon $*" ;;
     kick)  [ $# -ge 1 ] || die "usage: bambo user kick <player> [reason]"; console "/kick $*" ;;
-    gamemode|gm) [ $# -ge 1 ] || die "usage: bambo user gamemode <0-3> [player]"; console "/gamemode $*" ;;
-    *)     die "user: use list|op|deop|whitelist|ban|unban|kick|gamemode" ;;
+    gamemode|gm)
+           [ $# -ge 1 ] || die "usage: bambo user gamemode <0-3> [player]"
+           case "$1" in 0|1|2|3) ;; *) die "gamemode must be 0-3 (got '$1')";; esac
+           console "/gamemode $*" ;;
+    info)
+           [ $# -ge 1 ] || die "usage: bambo user info <player>"
+           local p="$1"
+           echo "player: $p"
+           if grep -qE "(^|,)[[:space:]]*${p}[[:space:]]*($|,)" "$SRV/ops.txt" 2>/dev/null; then
+             echo "  operator: yes"
+           else
+             echo "  operator: no"
+           fi
+           if grep -qE "(^|,)[[:space:]]*${p}[[:space:]]*($|,)" "$SRV/white-list.txt" 2>/dev/null; then
+             echo "  whitelisted: yes"
+           else
+             echo "  whitelisted: no"
+           fi
+           if grep -q "$p" "$SRV/banned-players.json" 2>/dev/null; then
+             echo "  banned: yes"
+           else
+             echo "  banned: no"
+           fi
+           ;;
+    *)     die "user: use list|info|op|deop|whitelist|ban|unban|kick|gamemode" ;;
   esac
 }
 plugins() { console_out "/plugins"; }
 broadcast() { [ $# -ge 1 ] || die "usage: bambo broadcast <message>"; console "/say $*"; }
 tps() { console_out "/tps"; }
+
+# ---- world trash (undo for deleted worlds) ----
+world_trash_list() {
+  local any=0 e
+  for e in "$SRV/.trash/worlds"/*/; do
+    [ -d "$e" ] || continue
+    any=1
+    echo "  $(basename "$e")"
+  done
+  [ "$any" = 0 ] && echo "  (no trashed worlds)" || true
+}
+world_trash_resolve() {
+  # resolves a user-supplied name to the single matching trash entry
+  local want="$1" e name matches=""
+  for e in "$SRV/.trash/worlds"/*/; do
+    [ -d "$e" ] || continue
+    name="$(basename "$e")"
+    if [ "$name" = "$want" ] || [[ "$name" == *"-$want" ]]; then
+      matches="$matches $name"
+    fi
+  done
+  matches="${matches# }"
+  case "$(echo "$matches" | wc -w)" in
+    0) return 1 ;;
+    1) echo "$matches" ;;
+    *) echo "__ambiguous__" ;;
+  esac
+}
+world_trash_restore() {
+  local want="$1" entry name stamp
+  [ -n "$want" ] || die "usage: bambo world trash restore <id|name>"
+  entry="$(world_trash_resolve "$want")" || die "no trashed world matches '$want' (list: bambo world trash list)"
+  [ "$entry" = "__ambiguous__" ] && die "multiple trashed worlds match '$want' - use the full trash id"
+  stamp="${entry:0:15}"; name="${entry:16}"
+  lock_acquire; world_require_stopped
+  world_exists "$name" && { lock_release; die "world '$name' already exists - delete/rename it first"; }
+  mv "$SRV/.trash/worlds/$entry" "$SRV/worlds/$name" || { lock_release; die "restore failed"; }
+  lock_release
+  echo "restored world '$name' from trash ($entry)"
+}
+world_trash_purge() {
+  local want="$1" entry
+  [ -n "$want" ] || die "usage: bambo world trash purge <id>"
+  entry="$(world_trash_resolve "$want")" || die "no trashed world matches '$want'"
+  [ "$entry" = "__ambiguous__" ] && die "multiple matches - use the full trash id"
+  lock_acquire
+  rm -rf "$SRV/.trash/worlds/$entry" || { lock_release; die "purge failed"; }
+  lock_release
+  echo "permanently deleted trashed world $entry"
+}
+world_trash() {
+  local sub="${1:-list}"; shift || true
+  case "$sub" in
+    list) world_trash_list ;;
+    restore) world_trash_restore "$1" ;;
+    purge) world_trash_purge "$1" ;;
+    *) die "world trash: use list|restore|purge" ;;
+  esac
+}
+
+# ---- webhook notifications (optional; enabled by BAMBO_WEBHOOK_URL) ----
+notify() {
+  local event="$1" summary="${2:-}"
+  local url; url="$(cfg_val BAMBO_WEBHOOK_URL)"
+  [ -n "$url" ] || return 0
+  command -v curl >/dev/null 2>&1 || return 0
+  curl -fsS --max-time 10 -H 'content-type: application/json' \
+    -d "$(python3 -c 'import json,sys;print(json.dumps({"text": sys.argv[1], "service":"bambo-mc", "event": sys.argv[2], "version": sys.argv[3]}))' "$summary" "$event" "$BAMBO_VERSION")" \
+    "$url" >/dev/null 2>&1 || warn "webhook delivery failed for $event"
+}
+
+# ---- upstream update awareness ----
+update() {
+  local sub="${1:-check}"
+  case "$sub" in
+    check)
+      local current latest
+      current="$(state_get tag)"
+      echo "installed: PNX ${current:-<none>}"
+      if [ "${BAMBO_UPDATE_OFFLINE:-0}" = 1 ]; then
+        echo "upstream: skipped (BAMBO_UPDATE_OFFLINE=1)"
+        echo "status: run 'bambo update check' with network to compare"
+        return 0
+      fi
+      command -v curl >/dev/null 2>&1 || { echo "upstream: curl missing"; return 0; }
+      if ! latest="$(curl -fsS --max-time 20 https://api.github.com/repos/PowerNukkitX/PowerNukkitX/releases/latest \
+           | python3 -c 'import sys,json; print(json.load(sys.stdin)["tag_name"])' 2>/dev/null)"; then
+        echo "upstream: unreachable (offline?) - no comparison"
+        return 0
+      fi
+      echo "upstream: PNX $latest"
+      if [ "$current" = "$latest" ]; then
+        echo "status: up to date"
+      else
+        echo "status: UPDATE AVAILABLE - run 'bambo update apply'"
+      fi
+      ;;
+    apply)
+      local was_up=0
+      is_up && was_up=1
+      [ -f "$JAR" ] || { echo "no server jar yet - fetching + installing..."; setup; return 0; }
+      if [ "$was_up" = 1 ]; then
+        echo "stopping server for safe upgrade..."
+        stop
+      fi
+      backup || { warn "backup failed - aborting update"; [ "$was_up" = 1 ] && start; return 1; }
+      setup || { warn "setup failed - server left on the previous version"; [ "$was_up" = 1 ] && start; return 1; }
+      notify update "server upgraded to PNX $(state_get tag)"
+      if [ "$was_up" = 1 ]; then
+        echo "restarting server..."
+        start
+      else
+        echo "server was stopped; start it with 'bambo start' when ready."
+      fi
+      ;;
+    *) die "update: use check|apply" ;;
+  esac
+}
+
+# ---- scheduled daily restart (cron-managed maintenance) ----
+maintenance() {
+  local sub="${1:-status}"
+  local line="0 4 * * * cd \"$ROOT\" && ./bambo restart >> \"$ROOT/logs/maintenance.log\" 2>&1"
+  case "$sub" in
+    status)
+      if crontab -l 2>/dev/null | grep -qF "bambo restart"; then
+        echo "daily auto-restart: ON (04:00)"
+      else
+        echo "daily auto-restart: OFF"
+      fi
+      ;;
+    on)
+      crontab -l 2>/dev/null | grep -qF "bambo restart" && { echo "daily auto-restart already ON"; return 0; }
+      mkdir -p "$ROOT/backups" "$ROOT/logs"
+      local stamp; stamp="$(date +%Y%m%d-%H%M%S)"
+      crontab -l 2>/dev/null > "$ROOT/backups/crontab.backup.$stamp" || true
+      { crontab -l 2>/dev/null; echo "$line"; } | crontab -
+      echo "daily auto-restart enabled (04:00); previous crontab saved to backups/crontab.backup.$stamp"
+      ;;
+    off)
+      crontab -l 2>/dev/null | grep -qF "bambo restart" || { echo "daily auto-restart already OFF"; return 0; }
+      crontab -l 2>/dev/null | grep -vF "bambo restart" | crontab -
+      echo "daily auto-restart disabled"
+      ;;
+    *) die "maintenance: use status|on|off" ;;
+  esac
+}
+
+# ---- audit log viewer ----
+audit() {
+  local n="${1:-20}"
+  n="${n//[^0-9]/}"
+  [ -n "$n" ] || n=20
+  if [ -f "$AUDIT_LOG" ]; then
+    tail -n "$n" "$AUDIT_LOG"
+  else
+    echo "(no audit log yet - the dashboard writes one on first action)"
+  fi
+}
+
+# ---- docs from the shell ----
+docs() {
+  local which="${1:-README}"
+  case "$which" in
+    README|readme) f="$ROOT/README.md" ;;
+    runbook|RUNBOOK) f="$ROOT/docs/RUNBOOK.md" ;;
+    security|SECURITY) f="$ROOT/SECURITY.md" ;;
+    *) die "docs: use README|runbook|security" ;;
+  esac
+  if [ -t 1 ] && command -v less >/dev/null 2>&1; then
+    less "$f"
+  else
+    cat "$f"
+  fi
+}
 
 # raw operator command pass-through (this is what the dashboard reuses)
 cmd() {
@@ -623,6 +828,7 @@ cfg_def() {
     BAMBO_DASH_HOST) echo "127.0.0.1" ;;
     BAMBO_DASH_PORT) echo 8787 ;;
     BAMBO_DASH_TOKEN) echo "" ;;
+    BAMBO_WEBHOOK_URL) echo "" ;;
   esac
 }
 cfg_val() {
@@ -885,6 +1091,7 @@ backup() {
   local wc; wc="$(find "$dest/worlds" -type f | wc -l)"
   echo "  snapshot $ts: $(du -sh "$dest" | cut -f1), $wc files"
   [ "$ok" = 1 ] && echo "  integrity: OK (CURRENT -> $cur exists)"
+  notify backup "snapshot $ts created ($(du -sh "$dest" | cut -f1))"
 
   # retention: keep the newest $keep snapshots
   local old; old="$(ls -1d "$dir"/[0-9]* 2>/dev/null | sort -r | tail -n +$((keep+1)))"
@@ -1136,6 +1343,10 @@ bambo (alias: bambo-mc) v$BAMBO_VERSION - control the Bedrock server + admin das
   bambo cmd <console-command>          run ANY command on the server console
   bambo config init|show|set|apply|wizard|get|diff|apply-template
                              user configuration (bambo.conf) -> server (pnx.yml)
+  bambo update check|apply   check upstream PNX version / safely upgrade (backup+install)
+  bambo maintenance status|on|off   scheduled daily auto-restart (04:00)
+  bambo audit [n]           recent dashboard actions
+  bambo docs [README|runbook|security]   open local docs
 
   bambo backup [--force]    snapshot worlds+players (stop the server first)
   bambo restore list|<ts>   roll worlds back to a snapshot
@@ -1216,6 +1427,14 @@ COMMANDS
     plugins              list installed plugins (live server)
     broadcast <msg>      send a message to all players (/say)
     tps                 server tick rate / performance (live server)
+    update check|apply  check the upstream PNX release against the installed one;
+                         apply backs up, installs the verified jar, and restarts
+                         only if the server was running.
+    maintenance status|on|off
+                         scheduled daily auto-restart at 04:00 (cron-managed).
+    audit [n]           show recent dashboard actions from logs/dash-audit.log.
+    docs [README|runbook|security]
+                         print local documentation.
     cmd <text>           send an arbitrary console command (operator pass-through;
                          newlines rejected for safety)
     motd "<name>" ["<sub>"]   set server-list name; edits bambo.conf then deploys and restarts
@@ -1300,6 +1519,10 @@ main() {
         plugins)  plugins ;;
         broadcast|say) broadcast "$@" ;;
         tps)      tps ;;
+        update)    update "${1:-check}" ;;
+        maintenance) maintenance "${1:-status}" ;;
+        audit)     audit "${1:-20}" ;;
+        docs)      docs "${1:-README}" ;;
         op)       op "$@" ;;
         whitelist|whl) whitelist "$@" ;;
         world)    world "$@" ;;

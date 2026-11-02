@@ -48,3 +48,7 @@ BAMBO_DASH_PORT=8787
 
 # Optional: set a fixed dashboard token here (otherwise dash.token is auto-generated)
 #BAMBO_DASH_TOKEN=
+
+# Optional: webhook URL for notifications (start/stop/backup/crash). Works with
+# Discord/Slack-style incoming webhooks (POST JSON {"text": ...}).
+#BAMBO_WEBHOOK_URL=
