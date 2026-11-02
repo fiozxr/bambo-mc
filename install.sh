@@ -49,9 +49,9 @@ fetch_repo() {
     echo "$dest"
     return 0
   fi
-  echo "  bambo-mc is not installed here yet - downloading it to $dest"
+  echo "  bambo-mc is not installed here yet - downloading it to $dest" >&2
   if [ "$DRYRUN" = 1 ]; then
-    echo "    (dry-run) would download to $dest"
+    echo "    (dry-run) would download to $dest" >&2
     echo "$dest"
     return 0
   fi
@@ -218,7 +218,14 @@ REPO="$(locate_repo)"
 if [ -z "$REPO" ] || [ ! -x "$REPO/bambo" ]; then
   REPO="$(fetch_repo)" || exit 1
 fi
-[ -f "$REPO/bambo" ] || { printf 'bambo install: app folder not found (tried the script dir, ./ and ~/bambo-mc).\nRun install.sh from inside the repo or set BAMBO_REPO=/path/to/bambo-mc.\n' >&2; exit 1; }
+if [ -f "$REPO/bambo" ]; then
+  :
+elif [ "$DRYRUN" = 1 ]; then
+  exit 0
+else
+  printf 'bambo install: app folder not found (tried the script dir, ./ and ~/bambo-mc).\nRun install.sh from inside the repo or set BAMBO_REPO=/path/to/bambo-mc.\n' >&2
+  exit 1
+fi
 
 
 # ---------- phase 1: analyse (fast, shown immediately) ----------
