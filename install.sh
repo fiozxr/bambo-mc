@@ -32,7 +32,7 @@ REPO=""; PREFIX=""; SYSTEM=0; UNINSTALL=0; LAUNCH=1; FORCEJAR=0; CHECK=0; AUTO=0
 locate_repo() {
   [ -n "${BAMBO_REPO:-}" ] && { echo "$BAMBO_REPO"; return 0; }
   [ -n "$SELF_DIR" ] && [ -x "$SELF_DIR/bambo" ] && { echo "$SELF_DIR"; return 0; }
-  [ -x "./bambo" ] && [ -d "./runtime" ] && { (cd . && pwd); return 0; }
+  [ -x "./bambo" ] && { [ -d "./runtime" ] || [ -f "./config.example" ]; } && { (cd . && pwd); return 0; }
   for c in "$HOME/bambo-mc" "$PWD/bambo-mc" /opt/bambo-mc; do
     [ -x "$c/bambo" ] && { echo "$c"; return 0; }; done
   return 1
