@@ -1,0 +1,35 @@
+# bambo-mc — game server systemd unit (optional; tmux mode is the default).
+#
+# Install (replace %h with the home dir of the user that owns the repo):
+#   sudo cp deploy/bambo-mc.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now bambo-mc
+#
+# Notes:
+#   * Run as the repo owner; the service uses User= and WorkingDirectory=.
+#   * Prefer `systemctl start bambo-mc` over `bambo start` when managed this way
+#     (tmux mode and systemd mode must not be mixed for the same instance).
+#   * The nightly backup cron still works as-is: it calls `bambo stop` / `bambo
+#     start`, which become no-ops if the server is under systemd control — so if
+#     you use this unit, replace the cron line with:
+#         systemctl stop bambo-mc && ./bambo backup && systemctl start bambo-mc
+
+[Unit]
+Description=bambo-mc Minecraft Bedrock server (PowerNukkitX)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=%h
+WorkingDirectory=%h/bambo-mc/runtime
+ExecStart=/usr/bin/java -Xms1536M -Xmx1536M -XX:+UseG1GC -XX:MaxGCPauseMillis=50 -XX:+ShowCodeDetailsInExceptionMessages -jar powernukkitx.jar
+ExecStop=/usr/bin/tmux send-keys -t bambo-mc stop C-m
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=90
+KillMode=mixed
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

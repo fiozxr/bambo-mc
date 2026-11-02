@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# bambo-nettest - prove whether the Wi-Fi/hotspot lets devices talk to each other.
+# Run this on the laptop AFTER pointing the other devices at it. No Minecraft needed.
+#
+# Usage: bambo-nettest [port] [--help]
+set -uo pipefail
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  cat <<EOF
+usage: bambo-nettest [port]     (default port 19132)
+
+Proves device-to-device UDP reachability on the current network: listens for a
+packet from another device for up to 60s and reports whether it arrived.
+EOF
+  exit 0
+fi
+
+PORT="${1:-19132}"
+IFACE="$(ip -o link show type wifi 2>/dev/null | awk -F': ' '{print $2}' | head -1)"
+IFACE="${IFACE:-wlp2s0}"
+IP="$(ip -o -4 addr 2>/dev/null | awk -v ifc="$IFACE" '$2==ifc && $0~/scope global/ {print $4}' | cut -d/ -f1 | head -1)"
+[ -n "$IP" ] || IP="$(ip -o -4 addr 2>/dev/null | awk '$2!="lo" && $2!~/docker|lxc|br-/ && $0~/scope global/ {print $4}' | cut -d/ -f1 | head -1)"
+SSID="$(nmcli -t -f NAME,DEVICE,TYPE connection show --active 2>/dev/null | awk -F: -v ifc="$IFACE" '$3=="802-11-wireless" && $2==ifc {print $1; exit}')"
+
+echo "this laptop : ${IP:-<none>}   network: ${SSID:-unknown}"
+echo "testing UDP : port $PORT"
+echo
+echo "Now, from ANOTHER device on the same network:"
+if [ -n "${IP:-}" ]; then
+  echo "  Windows (PowerShell):  ping $IP"
+  echo "  Android (browser)   :  http://${IP}:$PORT   (a 'refused/blank' page = reachable = GOOD)"
+  echo "  Android (terminal)  :  nc -u -w2 $IP $PORT"
+fi
+echo
+echo "Waiting up to 60s for a UDP packet (Ctrl-C to abort)..."
+timeout 60 nc -lu -p "$PORT" >/dev/null 2>&1
+rc=$?
+echo
+echo "==== verdict ===="
+if [ $rc -eq 0 ] && [ "$(ip neigh | grep -cE 'REACHABLE|STALE')" -gt 1 ]; then
+  echo "PASS - a peer reached this laptop directly. Join by IP works on '${SSID:-this network}'."
+  echo "       If Minecraft still shows no LAN worlds, that is only broadcast/multicast being"
+  echo "       filtered, which a dedicated server does not need."
+else
+  echo "NO PACKET SEEN. Either nobody sent one, or this network blocks client-to-client traffic."
+  echo "Confirm the peer really is on '${SSID:-this network}' (not mobile data / a guest band /"
+  echo "a second hotspot) and re-run. If it still fails, client isolation is on - fix:"
+  echo "  make THIS laptop the AP:  nmcli device wifi hotspot ssid bambo band bg"
+  echo "  and share internet to it from USB tethering or ethernet."
+fi
+echo
+echo "peers seen in the ARP table (devices that have spoken on this network):"
+ip neigh show dev "$IFACE" 2>/dev/null | grep -vE '^fe80|router' | head -10 || echo "  (none)"

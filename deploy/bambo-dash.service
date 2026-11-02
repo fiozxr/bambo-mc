@@ -1,0 +1,21 @@
+# bambo-mc — admin dashboard systemd unit (optional).
+#
+# Install (replace %h with the home dir of the user that owns the repo):
+#   sudo cp deploy/bambo-dash.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now bambo-dash
+
+[Unit]
+Description=bambo-mc admin dashboard
+After=network-online.target
+
+[Service]
+Type=exec
+User=%h
+WorkingDirectory=%h/bambo-mc
+ExecStart=/usr/bin/python3 %h/bambo-mc/bin/bambo-dash.py --host 127.0.0.1 --port 8787
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

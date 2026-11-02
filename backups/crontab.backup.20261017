@@ -1,0 +1,2 @@
+0 4 * * * /home/fiozxr/minecraftbe/we-craft/restart.sh 2>&1
+0 4 * * * /home/fiozxr/minecraftbe/n/restart.sh 2>&1

@@ -1,0 +1,47 @@
+# ── OS / editor ──────────────────────────────────────────────
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# ── Secrets (never commit) ──────────────────────────────────
+dash.token
+
+# ── runtime: generated, large, machine-specific data ────────
+runtime/backups/
+runtime/logs/
+runtime/players/
+runtime/worlds/
+runtime/command_data/
+runtime/resource_packs/
+runtime/structures/
+runtime/services/
+runtime/plugins/
+runtime/*.jar
+runtime/*.jar.prev
+runtime/bambo.state.json
+runtime/.bambo.lock
+runtime/.bambo.intentional-stop
+runtime/server.lock
+runtime/pnx.yml
+runtime/ops.txt
+runtime/white-list.txt
+runtime/banned-ips.json
+runtime/banned-players.json
+runtime/pnx.yml.pre-apply-*
+
+# ── project logs (build/cron/dashboard/watchdog) ─────────────
+logs/*
+!logs/.gitkeep
+
+# ── third-party downloaded reference (kept as its own repo) ─
+forks/
+
+# ── java build output / bytecode ────────────────────────────
+empty-serve/out/
+**/__pycache__/
+*.pyc
+
+# ── local tool state ────────────────────────────────────────
+.qoder/

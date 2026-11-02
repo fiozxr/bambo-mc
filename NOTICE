@@ -1,0 +1,38 @@
+# bambo-mc
+
+Local Minecraft: Bedrock Edition server + admin tooling for a small LAN / phone-hotspot
+group. See `README.md` for usage.
+
+## Licensing summary
+
+Two distinct things live here with two different licenses. Do not conflate them.
+
+### The running server engine — LGPL-3.0
+`runtime/powernukkitx.jar` and its source clone `forks/empty-serve` are
+**PowerNukkitX 3.0.5** (git `9813b75`), an LGPL-3.0 project, itself a continuation of
+Nukkit / PowerNukkit. Copyright stays with those authors; `LICENSE` (repo root and
+`forks/empty-serve/LICENSE`) is the verbatim LGPL-3.0 text. This is a runtime engine
+dependency, not code `bambo-mc` claims as its own.
+
+- Upstream: https://github.com/PowerNukkitX/PowerNukkitX
+
+### bambo-mc's own code — MIT
+Everything the project wrote itself is original and MIT:
+- `bambo` / `bambo-mc` - control CLI
+- `install.sh` - installer
+- `bin/bambo-dash.py` - admin dashboard
+- `bin/bambo-nettest` - reachability probe
+- `empty-serve/` - the from-scratch Bedrock server (discovery + handshake + crypto
+  primitives); MIT, does not copy from PNX. See `empty-serve/README.md` and
+  `empty-serve/LICENSE`.
+
+### Third-party protocol libraries (Apache-2.0)
+`empty-serve` is designed to build on CloudburstMC's Apache-2.0 protocol/transport
+libraries. Those dependencies require only that their Apache notice accompany any
+redistribution (see `empty-serve/` docs); they do not impose LGPL on our code.
+
+## Names
+
+"PowerNukkitX", "Nukkit", "Minecraft" and "Bedrock" are trademarks/names of their
+respective owners. `bambo-mc` and `empty-serve` are this project's names; using them
+does not imply any affiliation or endorsement.

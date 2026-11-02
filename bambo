@@ -1,0 +1,956 @@
+#!/usr/bin/env bash
+# bambo (alias: bambo-mc) - control the Bedrock server + admin dashboard.
+#
+# This is the single operational entry point for the bambo-mc deployment:
+#   services, dashboard, players/op/whitelist/world/cmd/motd/config,
+#   backup/restore/setup, doctor/health/watch, help/man.
+#
+# Run 'bambo help' or 'bambo man' for the manual; bare 'bambo' starts all services.
+#
+# Production notes (v2):
+#   - Locking (flock) prevents concurrent backup/setup/restore races.
+#   - runtime/bambo.state.json pins the installed server (tag, sha256, protocol).
+#   - Backup snapshots carry a manifest.json and are verified automatically.
+#   - 'doctor' is the first thing to run when something looks wrong.
+set -uo pipefail
+
+BAMBO_VERSION="2.0.0"
+
+# cron's default PATH is /usr/bin:/bin, which omits /usr/sbin - where `ip` lives.
+# Without this, lan_ip()/join() silently return nothing when run from a cron job.
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$HOME/.local/bin:$PATH"
+export PATH
+
+ROOT="${BAMBO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+SRV="$ROOT/runtime"
+JAR="$SRV/powernukkitx.jar"
+JAR_PREV="$SRV/powernukkitx.jar.prev"
+SESSION="bambo-mc"
+SESSION_DASH="bambo-dash"
+DASH_HOST="${BAMBO_DASH_HOST:-127.0.0.1}"
+DASH_PORT="${BAMBO_DASH_PORT:-8787}"
+JAVA_HOME_FALLBACK="/usr/lib/jvm/java-21-openjdk-amd64"
+HEAP="${BAMBO_HEAP:-1536M}"
+PORT=19132
+STATE_FILE="$SRV/bambo.state.json"
+LOCK_FILE="$SRV/.bambo.lock"
+INTENTIONAL_STOP="$SRV/.bambo.intentional-stop"
+AUDIT_LOG="$ROOT/logs/dash-audit.log"
+WATCHDOG_LOG="$ROOT/logs/watchdog.log"
+
+die() { echo "bambo: $*" >&2; exit 1; }
+warn() { echo "bambo: warning: $*" >&2; }
+
+# ---- locking: serialize dangerous ops (start/stop/backup/restore/setup) ----
+lock_acquire() {
+  local fd
+  mkdir -p "$SRV"
+  exec {fd}<>"$LOCK_FILE"
+  if ! flock -n "$fd"; then
+    die "another bambo operation is in progress (lock $LOCK_FILE is held) - retry shortly"
+  fi
+  LOCK_FD=$fd
+}
+lock_release() {
+  [ -n "${LOCK_FD:-}" ] && flock -u "$LOCK_FD" 2>/dev/null || true
+  LOCK_FD=""
+}
+
+# ---- state file: pinned, reproducible deployment facts (JSON) ----
+state_load() {
+  local f="$STATE_FILE"
+  if [ -f "$f" ]; then cat "$f"; else echo '{}'; fi
+}
+state_write() {
+  # usage: state_write key=value [key=value ...]
+  command -v python3 >/dev/null || { warn "python3 missing - state not recorded"; return 1; }
+  ESX_STATE_FILE="$STATE_FILE" python3 - "$@" <<'PY' 2>/dev/null || return 1
+import os, json, sys
+path = os.environ["ESX_STATE_FILE"]
+d = {}
+try:
+    d = json.load(open(path, encoding="utf-8"))
+except Exception:
+    pass
+for arg in sys.argv[1:]:
+    k, _, v = arg.partition("=")
+    d[k] = v
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+    json.dump(d, f, indent=2)
+    f.write("\n")
+os.replace(tmp, path)
+PY
+}
+state_get() {
+  local key="$1" f="$STATE_FILE"
+  [ -f "$f" ] || { echo ""; return 1; }
+  python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+    print(d.get(sys.argv[2], ""))
+except Exception:
+    pass' "$f" "$key" 2>/dev/null
+}
+
+find_java() {
+  if java -version 2>&1 | grep -q 'version "2[1-9]'; then command -v java; return; fi
+  for c in "$JAVA_HOME_FALLBACK"/bin/java /usr/lib/jvm/*/bin/java; do
+    [ -x "$c" ] && "$c" -version 2>&1 | grep -q 'version "2[1-9]' && { echo "$c"; return; }
+  done
+  die "need Java 21+ (PNX 3.x will not run on older)"
+}
+
+lan_ip() {
+  local i a
+  i="$(ip -o link show type wifi 2>/dev/null | awk -F': ' '{print $2}' | head -1)"
+  [ -n "$i" ] || i="$(iw dev 2>/dev/null | awk '/Interface/{print $2; exit}')"
+  [ -n "$i" ] || i="wlan0"
+  a="$(ip -o -4 addr 2>/dev/null | awk -v ifc="$i" '$2==ifc && $0~/scope global/ {print $4}' | cut -d/ -f1 | head -1)"
+  [ -n "$a" ] || a="$(ip -o -4 addr 2>/dev/null | awk '$2!="lo" && $2!~/docker|lxc|br-/ && $0~/scope global/ {print $4}' | cut -d/ -f1 | head -1)"
+  echo "$a"
+}
+
+net_name() { nmcli -t -f NAME,DEVICE,TYPE connection show --active 2>/dev/null | awk -F: '$3=="802-11-wireless"{print $1; exit}'; }
+
+port_free() { ! ss -lun 2>/dev/null | awk '{print $5}' | grep -qE ":${PORT}$"; }
+
+# ---- console plumbing: the shared backend for players/op/whitelist/world/cmd ----
+is_up() { tmux has-session -t "$SESSION" 2>/dev/null; }
+dash_up() { tmux has-session -t "$SESSION_DASH" 2>/dev/null; }
+
+console() {
+  is_up || die "server not running - start it first (bambo start)"
+  tmux send-keys -t "$SESSION" "$*" C-m
+  echo "sent to console: $*"
+}
+
+console_out() {
+  is_up || die "server not running - start it first (bambo start)"
+  tmux send-keys -t "$SESSION" "$*" C-m
+  sleep 0.8
+  tmux capture-pane -pt "$SESSION" -S -30 2>/dev/null | grep -vE '^\s*$' | tail -18
+}
+start() {
+  [ -f "$JAR" ] || die "missing $JAR - run ./bambo setup first"
+  tmux has-session -t "$SESSION" 2>/dev/null && { echo "server already running:"; status; return 0; }
+  port_free || die "UDP $PORT is busy - another Bedrock server is holding it"
+  local jvm; jvm="$(find_java)"
+  lock_acquire
+  # starting is an explicit act: clear the intentional-stop marker so the watchdog
+  # treats subsequent crashes as genuine failures (and restarts them).
+  rm -f "$INTENTIONAL_STOP"
+  cd "$SRV" || die "missing $SRV"
+  tmux new-session -d -s "$SESSION" \
+    "\"$jvm\" -Xms${HEAP} -Xmx${HEAP} -XX:+UseG1GC -XX:MaxGCPauseMillis=50 -XX:+ShowCodeDetailsInExceptionMessages -jar powernukkitx.jar" \
+    2>/dev/null || { lock_release; die "could not start detached"; }
+  echo "starting (first boot generates worlds, allow ~60s)..."
+  local ok=""
+  for _ in $(seq 1 90); do
+    tmux has-session -t "$SESSION" 2>/dev/null || break
+    if ss -lun 2>/dev/null | grep -qE ":${PORT}"; then ok=1; break; fi
+    sleep 1
+  done
+  lock_release
+  if [ -n "$ok" ]; then
+    echo "READY - listening on UDP $PORT"
+  elif tmux has-session -t "$SESSION" 2>/dev/null; then
+    echo "still booting; watch with ./bambo tail"
+  else
+    echo "FAILED - process exited immediately."
+    # tmux is already gone, so capture-pane yields nothing; fall back to the log file
+    local lg; lg="$SRV/logs/server.log"
+    if [ -f "$lg" ]; then
+      echo "  last lines of $lg:"; tail -12 "$lg" | sed 's/^/    /'
+    else
+      echo "  no log file yet - run it in the foreground to see the error:"
+      echo "    cd $SRV && java -Xmx${HEAP} -jar powernukkitx.jar"
+    fi
+    die "server did not stay up"
+  fi
+  join
+}
+
+stop() {
+  tmux has-session -t "$SESSION" 2>/dev/null || { echo "server not running"; rm -f "$INTENTIONAL_STOP"; return 0; }
+  lock_acquire
+  tmux send-keys -t "$SESSION" 'stop' C-m 2>/dev/null
+  local i=0
+  while [ $i -lt 40 ]; do
+    tmux has-session -t "$SESSION" 2>/dev/null || {
+      echo "stopped cleanly"; touch "$INTENTIONAL_STOP"; lock_release; return 0; }
+    sleep 1; i=$((i+1))
+  done
+  # World saves can take a while on a slow disk; killing early risks losing chunk edits.
+  echo "still shutting down after ${i}s - it may be saving worlds."
+  if [ ! -e /proc/self/fd/0 ] || ! read -r -p "force kill now? [y/N] " a < /dev/tty 2>/dev/null; then
+    # No terminal (cron/systemd): waiting forever would leave the port held and
+    # make ./bambo backup refuse. We already gave it 40s to save.
+    echo "  no terminal available (cron?) - forcing stop after ${i}s grace"
+    tmux kill-session -t "$SESSION" 2>/dev/null; echo "stopped (forced)"
+  elif [ "$a" = "y" ] || [ "$a" = "Y" ]; then
+    tmux kill-session -t "$SESSION" 2>/dev/null; echo "killed"
+  else
+    echo "left running; check ./bambo status in a moment"
+    lock_release
+    return 0
+  fi
+  touch "$INTENTIONAL_STOP"
+  lock_release
+}
+status() {
+  if tmux has-session -t "$SESSION" 2>/dev/null; then
+    local b; b="$(ss -lun 2>/dev/null | grep -qE ":${PORT}" && echo bound || echo 'not bound yet')"
+    echo "server : RUNNING  (udp/$PORT $b)"
+  else
+    echo "server : STOPPED"
+  fi
+  if tmux has-session -t "$SESSION_DASH" 2>/dev/null; then
+    echo "dash   : RUNNING  http://$DASH_HOST:$DASH_PORT"
+  else
+    echo "dash   : STOPPED"
+  fi
+  local tag; tag="$(state_get tag)"
+  [ -n "$tag" ] && echo "install : PNX $tag   (state: $STATE_FILE)" || true
+}
+
+status_json() {
+  # machine-readable status for tooling; emits one JSON object.
+  local up="false" dup="false" bound="false"
+  is_up && up="true"
+  dash_up && dup="true"
+  ss -lun 2>/dev/null | grep -qE ":${PORT}" && bound="true"
+  local tag proto client ip
+  tag="$(state_get tag)"; proto="$(state_get protocol)"; client="$(state_get client_version)"
+  ip="$(lan_ip)"
+  printf '{"tool_version":"%s","up":%s,"dash_up":%s,"port_bound":%s,"pnx_tag":"%s","protocol":"%s","client_version":"%s","join_ip":"%s"}\n' \
+    "$BAMBO_VERSION" "$up" "$dup" "$bound" "$tag" "$proto" "$client" "$ip"
+}
+
+health() {
+  local want_json="${1:-}"
+  if [ "$want_json" = "--json" ]; then
+    status_json
+    return 0
+  fi
+  echo "== bambo-mc health (v$BAMBO_VERSION) =="
+  status
+  local tag; tag="$(state_get tag)"
+  if [ -n "$tag" ]; then
+    echo "  server pin : PNX $tag  protocol $(state_get protocol)  client $(state_get client_version)"
+  else
+    echo "  server pin : (none recorded - run ./bambo setup to record)"
+  fi
+  echo "  join       : $(lan_ip):$PORT  network: $(net_name)"
+  local n; n="$(ls -1 "$SRV/backups" 2>/dev/null | grep -Ec '^[0-9]{8}-')"
+  echo "  backups    : $n snapshot(s) (retention ${BAMBO_KEEP:-10})"
+  echo "  disk       : $(df -h "$ROOT" | awk 'NR==2{print $4" free of "$2" ("$5" used)"}')"
+  local cr; cr="$(crontab -l 2>/dev/null | grep -c 'bambo backup')"
+  echo "  cron backup : $([ "$cr" -ge 1 ] && echo installed || echo MISSING)"
+}
+
+join() {
+  local ip n; ip="$(lan_ip)"; n="$(net_name)"
+  echo "network: ${n:-unknown}    (re-run this if you switch WiFi or the lease changes)"
+  echo "Bedrock clients - Servers -> Add Server:"
+  echo "  address  ${ip:-<no network>}    port  $PORT"
+  echo "  (this machine only: 127.0.0.1)"
+}
+
+logs() {
+  local n="${1:-60}"
+  n="${n//[^0-9]/}"
+  [ -n "$n" ] || n=60
+  if is_up; then
+    tmux capture-pane -pt "$SESSION" -S -"$n" 2>/dev/null || die "not running"
+  else
+    local lg="$SRV/logs/server.log"
+    if [ -f "$lg" ]; then
+      echo "(server stopped - showing last $n lines of $lg)"
+      tail -n "$n" "$lg"
+    else
+      echo "(server stopped, no log file yet)"
+    fi
+  fi
+}
+
+watch() {
+  # Opt-in watchdog: restarts the server if it dies while it was supposed to be up.
+  # 'start' clears the intentional-stop marker; 'stop' sets it. If the marker is
+  # present, the server is considered intentionally down and the watchdog stays quiet.
+  local once="${1:-}" interval="${2:-15}"
+  case "$once" in
+    --once) once=1 ;;
+    *) once=0 ;;
+  esac
+  case "$interval" in
+    --interval=*) interval="${interval#--interval=}" ;;
+  esac
+  [[ "$interval" =~ ^[0-9]+$ ]] || interval=15
+  [ "$interval" -ge 5 ] || interval=5
+  command -v tmux >/dev/null || die "tmux required"
+  mkdir -p "$(dirname "$WATCHDOG_LOG")"
+  echo "$(date -Is) watchdog started (interval ${interval}s, once=$once)" >> "$WATCHDOG_LOG"
+  local restarts=0
+  while :; do
+    if ! is_up; then
+      if [ -f "$INTENTIONAL_STOP" ]; then
+        [ "$once" = 1 ] && { echo "server intentionally stopped; exiting"; break; }
+      elif [ -f "$JAR" ]; then
+        restarts=$((restarts+1))
+        echo "$(date -Is) SERVER DOWN - restarting (attempt #$restarts)" >> "$WATCHDOG_LOG"
+        start >/dev/null 2>&1 || echo "$(date -Is) restart FAILED" >> "$WATCHDOG_LOG"
+      else
+        echo "$(date -Is) jar missing - nothing to restart" >> "$WATCHDOG_LOG"
+        [ "$once" = 1 ] && break
+      fi
+    fi
+    [ "$once" = 1 ] && { echo "health check done (server $([ is_up ] && echo up || echo down))"; break; }
+    sleep "$interval"
+  done
+}
+# ---- services: server + dashboard ----
+up() {
+  start
+  dash_start
+}
+down() { stop; dash_stop; }
+
+dash_start() {
+  dash_up && { echo "dashboard already running: http://$DASH_HOST:$DASH_PORT"; return 0; }
+  command -v python3 >/dev/null || die "python3 not found - needed for the dashboard"
+  [ -f "$ROOT/bin/bambo-dash.py" ] || die "dashboard script not found: $ROOT/bin/bambo-dash.py"
+  tmux new-session -d -s "$SESSION_DASH" \
+    "python3 \"$ROOT/bin/bambo-dash.py\" --host \"$DASH_HOST\" --port \"$DASH_PORT\"" \
+    2>/dev/null || die "could not start dashboard"
+  sleep 1
+  dash_up || die "dashboard failed to start (see logs/dash.log)"
+  echo "dashboard up: http://$DASH_HOST:$DASH_PORT"
+  if [ -n "${BAMBO_DASH_TOKEN:-}" ]; then
+    echo "  token: (from BAMBO_DASH_TOKEN env)"
+  elif [ -f "$ROOT/dash.token" ]; then
+    echo "  token: $(cat "$ROOT/dash.token")"
+  else
+    echo "  token: <generated on first request>"
+  fi
+  echo "  stop:  bambo dash stop   logs: bambo dash logs   rotate: bambo dash token-new"
+}
+dash_stop() {
+  dash_up || { echo "dashboard not running"; return 0; }
+  tmux kill-session -t "$SESSION_DASH" 2>/dev/null; echo "dashboard stopped"
+}
+dash_token_new() {
+  command -v python3 >/dev/null || die "python3 required"
+  python3 - <<'PY'
+import os, secrets, sys
+p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dash.token")
+tmp = p + ".tmp"
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w") as f:
+    f.write(secrets.token_hex(32) + "\n")
+os.replace(tmp, p)
+print("new token written to %s" % p)
+PY
+}
+dash() {
+  case "${1:-start}" in
+    start)  dash_start ;;
+    stop)   dash_stop ;;
+    status) dash_up && echo "dashboard RUNNING http://$DASH_HOST:$DASH_PORT" || echo "dashboard STOPPED" ;;
+    logs)   tmux capture-pane -pt "$SESSION_DASH" -S -60 2>/dev/null || { echo "(no live pane; latest dashboard log:)"; tail -30 "$ROOT/logs/dash.log" 2>/dev/null || die "dashboard not running"; } ;;
+    token-new|rotate) dash_token_new ;;
+    *)      die "dash: use start|stop|status|logs|token-new" ;;
+  esac
+}
+players() { console_out "list"; }
+
+op() {
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    add)         [ $# -ge 1 ] || die "usage: bambo op add <player>"; console "/op $*" ;;
+    del|rm|remove) [ $# -ge 1 ] || die "usage: bambo op del <player>"; console "/deop $*" ;;
+    list|ls)     echo "--- runtime/ops.txt ---"; cat "$SRV/ops.txt" 2>/dev/null || echo "(empty)" ;;
+    *)           die "op: use add|del|list" ;;
+  esac
+}
+
+whitelist() {
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    add)         [ $# -ge 1 ] || die "usage: bambo whitelist add <player>"; console "/whitelist add $*" ;;
+    del|rm|remove) [ $# -ge 1 ] || die "usage: bambo whitelist remove <player>"; console "/whitelist remove $*" ;;
+    on)          console "/whitelist on" ;;
+    off)         console "/whitelist off" ;;
+    list)        console_out "/whitelist list" ;;
+    reload)      console "/whitelist reload" ;;
+    *)           die "whitelist: use add|remove|list|on|off|reload" ;;
+  esac
+}
+
+world() {
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    list)   console_out "/world list" ;;
+    save)   console "/save-all" ;;
+    tp)     [ $# -ge 1 ] || die "usage: bambo world tp <world>"; console "/world tp $*" ;;
+    create|delete|remove|rename)
+      die "PNX built-in /world does not support '$sub' (only list/tp). Add a MultiWorld
+plugin for real world management; renaming/deleting by hand means stopping the server and
+moving folders under $SRV/worlds - say so if you want me to script that safely." ;;
+    *)      die "world: use list|save|tp (create/delete need a plugin)" ;;
+  esac
+}
+
+# raw operator command pass-through (this is what the dashboard reuses)
+cmd() {
+  [ $# -ge 1 ] || die "usage: bambo cmd <console command>"
+  for a in "$@"; do
+    case "$a" in
+      *$'\n'*) die "cmd: newlines are not allowed in console commands" ;;
+    esac
+  done
+  console "$*"
+}
+
+# ---- config: safe, comment-preserving editing of pnx.yml (python3, stdlib) ----
+CONFIG_KEYS="motd sub-motd maxPlayers xboxAuth allowList difficulty gamemode viewDistance pvp enableMetrics language defaultLevelName"
+
+config_edit() {
+  # config_edit <file> <key> <value>   (rewrites one key; preserves everything else)
+  command -v python3 >/dev/null || die "config needs python3"
+  ESX_CFG_FILE="$1" ESX_CFG_KEY="$2" ESX_CFG_VAL="$3" python3 - <<'PY' || die "failed to edit $2 in $1"
+import os, re
+path = os.environ["ESX_CFG_FILE"]; key = os.environ["ESX_CFG_KEY"]; val = os.environ["ESX_CFG_VAL"]
+# yaml-quote only when the value is not a plain safe token (numbers/bools/words)
+def esc(v):
+    if re.fullmatch(r"[A-Za-z0-9_.:+/-]+", v):
+        return v
+    return '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
+pat = re.compile(r"^(\s*)" + re.escape(key) + r"\s*:")
+out, hit = [], False
+for line in open(path, encoding="utf-8"):
+    m = pat.match(line)
+    if m:
+        out.append(m.group(1) + key + ": " + esc(val) + "\n"); hit = True
+    else:
+        out.append(line)
+if not hit:
+    raise SystemExit(1)
+tmp = path + ".tmp"
+open(tmp, "w", encoding="utf-8").writelines(out)
+os.replace(tmp, path)
+PY
+}
+
+config_get() {
+  local key="$1"
+  case " $CONFIG_KEYS " in
+    *" $key "*) ;;
+    *) die "config: unknown key '$key'. known: $CONFIG_KEYS" ;;
+  esac
+  grep -E "^\\s*${key}\\s*:" "$SRV/pnx.yml" 2>/dev/null | head -1 || echo "($key not set)"
+}
+
+config_set() {
+  local key="${1:-}" val="${2:-}"
+  case " $CONFIG_KEYS " in
+    *" $key "*) ;;
+    *) die "config: unknown key '$key'. known: $CONFIG_KEYS" ;;
+  esac
+  [ -f "$SRV/pnx.yml" ] || die "missing $SRV/pnx.yml"
+  val="${val//$'\n'/ }"
+  config_edit "$SRV/pnx.yml" "$key" "$val"
+  echo "config: $key = $(config_get "$key" | sed 's/^[^:]*: *//')"
+  if [ "$key" = "motd" ] || [ "$key" = "sub-motd" ]; then
+    echo "note: MOTD is read at startup - restarting the server to apply..."
+    stop; start
+  fi
+}
+
+config_diff() {
+  command -v python3 >/dev/null || die "config needs python3"
+  [ -f "$SRV/pnx.yml" ] && [ -f "$ROOT/server/pnx.yml" ] || { echo "(template or live config missing)"; return 1; }
+  ESX_TEMPLATE="$ROOT/server/pnx.yml" ESX_LIVE="$SRV/pnx.yml" python3 - <<'PY'
+import os, re
+def kv(path):
+    d = {}
+    for line in open(path, encoding="utf-8"):
+        m = re.match(r"^\s*([A-Za-z0-9_-]+)\s*:\s*(.*?)\s*$", line)
+        if m and m.group(1) not in d:
+            d[m.group(1)] = m.group(2)
+    return d
+t, l = kv(os.environ["ESX_TEMPLATE"]), kv(os.environ["ESX_LIVE"])
+keys = [k for k in t if k in l and t[k] != l[k]] + [k for k in l if k not in t]
+for k in sorted(set(keys)):
+    print(f"  {k}: template={t.get(k,'<absent>')!r} live={l.get(k,'<absent>')!r}")
+if not keys:
+    print("  (no drift between template and live config)")
+PY
+}
+
+config_apply() {
+  # one-way: tracked template -> live config (destructive to local changes)
+  [ -f "$ROOT/server/pnx.yml" ] || die "template missing: $ROOT/server/pnx.yml"
+  is_up && die "server is running - stop it first (bambo stop)"
+  local stamp; stamp="$(date +%Y%m%d-%H%M%S)"
+  cp -a "$SRV/pnx.yml" "$SRV/pnx.yml.pre-apply-$stamp" 2>/dev/null || true
+  cp -a "$ROOT/server/pnx.yml" "$SRV/pnx.yml"
+  echo "applied template -> runtime/pnx.yml (previous config kept as pnx.yml.pre-apply-$stamp)"
+  config_diff
+}
+
+config() {
+  case "${1:-diff}" in
+    get)   config_get "${2:-motd}" ;;
+    set)   [ $# -ge 3 ] || die "usage: bambo config set <key> <value>"; config_set "$2" "$3" ;;
+    diff)  config_diff ;;
+    apply) config_apply ;;
+    *)     die "config: use get|set|diff|apply" ;;
+  esac
+}
+
+motd() {
+  if [ "${1:-}" = "--show" ] || [ $# -eq 0 ]; then
+    echo "current:"; config_get motd; config_get sub-motd
+    [ $# -eq 0 ] && echo "usage: bambo motd \"<name>\" [\"<sub-name>\"]"
+    return 0
+  fi
+  config_set motd "$1"
+  [ $# -ge 2 ] && config_set sub-motd "$2"
+}
+backup() {
+  local force="${1:-}"
+  local keep="${BAMBO_KEEP:-10}"
+  local dir="$SRV/backups"
+  local ts; ts="$(date +%Y%m%d-%H%M%S)"
+  local dest="$dir/$ts"
+  mkdir -p "$dir"
+  lock_acquire
+
+  if tmux has-session -t "$SESSION" 2>/dev/null && [ "$force" != "--force" ]; then
+    lock_release
+    echo "server is RUNNING - worlds/ is a live LevelDB (db/LOCK), so copying it mid-write"
+    echo "can produce a snapshot that refuses to open."
+    echo "safest: ./bambo stop && ./bambo backup"
+    echo "or accept the risk with: ./bambo backup --force"
+    return 1
+  fi
+  tmux has-session -t "$SESSION" 2>/dev/null && echo "WARNING: snapshotting a running server - this copy may be unusable"
+
+  # return, never die(): in "stop && backup && start" an exit here would leave the server down
+  if [ ! -d "$SRV/worlds" ]; then
+    echo "nothing to back up: no $SRV/worlds"; lock_release; return 0
+  fi
+  mkdir -p "$dest" || { lock_release; die "cannot write to $dir"; }
+  cp -a "$SRV/worlds"  "$dest/worlds"  || { rm -rf "$dest"; lock_release; die "copy failed"; }
+  [ -d "$SRV/players" ] && cp -a "$SRV/players" "$dest/players"
+  cp -a "$SRV/pnx.yml" "$dest/pnx.yml"
+
+  # manifest + integrity check
+  local cur dbf
+  dbf="$dest/worlds/world/db"
+  cur=""
+  [ -f "$dbf/CURRENT" ] && cur="$(cat "$dbf/CURRENT" 2>/dev/null)"
+  {
+    echo "{"
+    echo "  \"created_utc\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\","
+    echo "  \"tool_version\": \"$BAMBO_VERSION\","
+    echo "  \"server\": \"$(state_get tag)\","
+    echo "  \"worlds\": {\"world\": {\"db_current\": \"$cur\"}},"
+    echo "  \"backup_dir\": \"$dir\""
+    echo "}"
+  } > "$dest/manifest.json"
+
+  local ok=1
+  if [ -n "$cur" ] && [ ! -f "$dbf/$cur" ]; then
+    echo "  WARNING: CURRENT=$cur but $cur is missing - snapshot may be incomplete"; ok=0
+  fi
+  local wc; wc="$(find "$dest/worlds" -type f | wc -l)"
+  echo "  snapshot $ts: $(du -sh "$dest" | cut -f1), $wc files"
+  [ "$ok" = 1 ] && echo "  integrity: OK (CURRENT -> $cur exists)"
+
+  # retention: keep the newest $keep snapshots
+  local old; old="$(ls -1d "$dir"/[0-9]* 2>/dev/null | sort -r | tail -n +$((keep+1)))"
+  if [ -n "$old" ]; then
+    echo "  pruning $(echo "$old" | wc -l) snapshot(s) older than retention ($keep)"
+    rm -rf $old
+  fi
+  lock_release
+}
+
+restore() {
+  local which="${1:-list}"
+  local dir="$SRV/backups"
+  if [ "$which" = "list" ] || [ -z "$which" ]; then
+    if [ -d "$dir" ]; then
+      echo "snapshots in $dir:"
+      for d in $(ls -1d "$dir"/[0-9]* 2>/dev/null | sort -r); do
+        echo "  $(basename "$d")   $(du -sh "$d" | cut -f1)   $( [ -f "$d/manifest.json" ] && echo manifest || echo no-manifest)"
+      done
+    else
+      echo "(no backups yet)"
+    fi
+    return 0
+  fi
+  local src="$dir/$which"
+  [ -d "$src/worlds" ] || die "no such backup: $which (./bambo restore list)"
+  lock_acquire
+  if tmux has-session -t "$SESSION" 2>/dev/null; then
+    lock_release
+    die "server is running - ./bambo stop first, or the live store will overwrite the restore"
+  fi
+  local stamp; stamp="$(date +%Y%m%d-%H%M%S)"
+  mv "$SRV/worlds"  "$SRV/worlds.pre-restore-$stamp"  && echo "  kept current worlds as worlds.pre-restore-$stamp"
+  if [ -d "$src/players" ] && [ -d "$SRV/players" ]; then
+    mv "$SRV/players" "$SRV/players.pre-restore-$stamp" && cp -a "$src/players" "$SRV/players"
+  fi
+  cp -a "$src/worlds" "$SRV/worlds" || { lock_release; die "restore copy failed - your data is still in worlds.pre-restore-$stamp"; }
+  [ -f "$src/pnx.yml" ] && cp -a "$src/pnx.yml" "$SRV/pnx.yml"
+  lock_release
+  echo "restored $which. ./bambo start to verify, then delete worlds.pre-restore-$stamp if all is well."
+}
+# version facts for known PNX releases (protocol / client version). Kept in sync
+# with docs/VERSIONS.md; unknown tags record the tag only.
+pnx_facts() {
+  case "$1" in
+    3.0.5) echo "2193|1.26.50" ;;
+    3.0.4) echo "2169|1.26.45" ;;
+    3.0.3) echo "2168|1.26.44" ;;
+    3.0.2) echo "2168|unknown" ;;
+    3.0.0|3.0.1) echo "1001|unknown" ;;
+    *) echo "|" ;;
+  esac
+}
+
+setup() {
+  # ./bambo setup              -> newest stable release
+  # ./bambo setup 3.0.4        -> a specific release (this is how you roll back when
+  #                              a Bedrock update outruns PNX: pick the build whose
+  #                              "Minecraft Version" matches your clients)
+  local want="${1:-}" api="https://api.github.com/repos/PowerNukkitX/PowerNukkitX"
+  command -v python3 >/dev/null || die "setup needs python3 to read the release API"
+  lock_acquire
+
+  local endpoint="$api/releases/latest"; [ -n "$want" ] && endpoint="$api/releases/tags/$want"
+  local meta rc=0
+  meta="$(curl -fsS --max-time 30 "$endpoint" 2>/dev/null | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+assets = [a for a in d.get('assets', []) if a['name'].endswith('.jar')]
+if not assets:
+    sys.exit(1)
+a = assets[0]
+print(d['tag_name'] + '|' + a['browser_download_url'] + '|' + (a.get('digest') or '') + '|' + str(a['size']))
+" 2>/dev/null)" || rc=$?
+  if [ $rc -ne 0 ] || [ -z "$meta" ]; then
+    [ -n "$want" ] && echo "bambo: no release tag '$want'. Known ones:" && \
+      curl -fsS --max-time 30 "$api/releases" | python3 -c "
+import sys,json
+for r in json.load(sys.stdin): print('  ', r['tag_name'], r['published_at'][:10])" 2>/dev/null
+    lock_release
+    die "could not read the GitHub release API${want:+ for '$want'}"
+  fi
+  local tag url digest size
+  IFS='|' read -r tag url digest size <<<"$meta"
+  digest="${digest#sha256:}"
+  echo "target: PNX $tag  ($((size/1048576)) MB)"
+
+  if [ -f "$JAR" ] && [ "$(stat -c%s "$JAR")" = "$size" ] \
+     && [ "$(sha256sum "$JAR" | cut -d' ' -f1)" = "$digest" ]; then
+    echo "  already present and verified: $JAR"
+  else
+    echo "  resume is on (-C -) and HTTP/1.1 is forced - HTTP/2 streams died mid-transfer"
+    echo "  on this link yesterday, so a stall aborts and retries instead of hanging."
+    curl -fL --http1.1 --retry 10 --retry-delay 5 -C - \
+         --speed-limit 2048 --speed-time 120 --max-time 7200 \
+         --progress-bar -o "$JAR.part" "$url" || { lock_release; die "download failed - rerun ./bambo setup to resume"; }
+
+    local got; got="$(sha256sum "$JAR.part" | cut -d' ' -f1)"
+    if [ -n "$digest" ] && [ "$got" != "$digest" ]; then
+      rm -f "$JAR.part"
+      lock_release
+      die "sha256 mismatch (got ${got:0:16}..., want ${digest:0:16}...) - partial deleted, rerun to resume"
+    fi
+    # preserve the previous jar for offline rollback
+    if [ -f "$JAR" ]; then
+      mv -f "$JAR" "$JAR_PREV"
+      echo "  previous jar kept as $(basename "$JAR_PREV")"
+    fi
+    mv "$JAR.part" "$JAR"
+    echo "  verified sha256 $got"
+  fi
+
+  # record the pinned deployment facts
+  local proto client
+  IFS='|' read -r proto client <<<"$(pnx_facts "$tag")"
+  state_write "tag=$tag" "sha256=$digest" "size=$size" "protocol=$proto" "client_version=$client" "installed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "  recorded state: tag=$tag protocol=$proto client=$client"
+  echo "next: ./bambo stop && ./bambo backup   (back up before swapping server versions)"
+  echo "      ./bambo start"
+  lock_release
+}
+version() {
+  echo "bambo-mc v$BAMBO_VERSION"
+  local tag proto client
+  tag="$(state_get tag)"; proto="$(state_get protocol)"; client="$(state_get client_version)"
+  if [ -n "$tag" ]; then
+    echo "server: PNX $tag (protocol $proto, client $client)"
+  elif [ -f "$JAR" ]; then
+    echo "server: jar present (state not recorded; run 'bambo setup' to pin)"
+  else
+    echo "server: no jar installed yet (run 'bambo setup')"
+  fi
+  echo "note : protocol must match your clients; see docs/VERSIONS.md"
+}
+
+doctor() {
+  echo "== bambo-mc doctor (v$BAMBO_VERSION) =="
+  local rc=0
+  ok() { echo "  [ok]  $1"; }
+  bad() { echo "  [!!]  $1"; rc=1; }
+  info() { echo "  [..]  $1"; }
+
+  # system
+  command -v java >/dev/null 2>&1 && ok "java found: $(java -version 2>&1 | head -1)" || bad "java not on PATH"
+  command -v tmux >/dev/null 2>&1 && ok "tmux found" || bad "tmux missing (required)"
+  command -v python3 >/dev/null 2>&1 && ok "python3 found: $(python3 --version 2>&1)" || bad "python3 missing (dashboard/config need it)"
+  command -v curl >/dev/null 2>&1 || info "curl missing (only setup needs it)"
+  command -v ip >/dev/null 2>&1 || info "ip missing (join/health address lookup may fail)"
+
+  # java 21+
+  if command -v java >/dev/null 2>&1; then
+    local jv; jv="$(java -version 2>&1 | grep -oE 'version "[0-9]+' | grep -oE '[0-9]+' | head -1)"
+    [ "${jv:-0}" -ge 21 ] && ok "java is 21+ ($jv)" || bad "java $jv is < 21 (PNX 3.x needs 21+)"
+  fi
+
+  # server state
+  if is_up; then
+    ok "server RUNNING"
+    ss -lun 2>/dev/null | grep -qE ":${PORT}" && ok "UDP $PORT bound" || bad "UDP $PORT NOT bound while running"
+  else
+    info "server stopped (fine if intentional)"
+    port_free && ok "UDP $PORT free" || bad "UDP $PORT is occupied by something else"
+  fi
+  if [ -f "$JAR" ]; then
+    ok "jar present: $(du -sh "$JAR" | cut -f1)"
+  else
+    bad "server jar missing - run 'bambo setup'"
+  fi
+  local tag; tag="$(state_get tag)"
+  [ -n "$tag" ] && info "pinned: PNX $tag (protocol $(state_get protocol), client $(state_get client_version))" \
+                || info "no state recorded yet (run 'bambo setup' to pin)"
+
+  # network
+  local ip; ip="$(lan_ip)"
+  [ -n "$ip" ] && ok "network address: $ip (network: $(net_name))" || info "no wifi IP detected (laptop not on a hotspot?)"
+
+  # config
+  if [ -f "$SRV/pnx.yml" ]; then
+    [ -f "$ROOT/server/pnx.yml" ] && config_diff >/dev/null 2>&1 && info "config template present (run 'bambo config diff' to compare)" || info "live config present"
+  else
+    bad "runtime/pnx.yml missing - server never configured"
+  fi
+
+  # backups
+  local n; n="$(ls -1d "$SRV/backups"/[0-9]* 2>/dev/null | wc -l)"
+  info "backups: $n snapshot(s) in runtime/backups (retention ${BAMBO_KEEP:-10})"
+
+  # retention
+  local cr; cr="$(crontab -l 2>/dev/null | grep -c 'bambo backup')"
+  [ "$cr" -ge 1 ] && ok "nightly backup cron installed" || info "nightly backup cron NOT installed (see README)"
+
+  # dashboard
+  if dash_up; then
+    ok "dashboard RUNNING http://$DASH_HOST:$DASH_PORT"
+  else
+    info "dashboard stopped (start with 'bambo dash start')"
+  fi
+  if [ -f "$ROOT/dash.token" ]; then
+    local perm; perm="$(stat -c %a "$ROOT/dash.token")"
+    [ "$perm" = "600" ] && ok "dash.token perms 600" || bad "dash.token perms $perm (want 600)"
+  else
+    info "dash.token not created yet (created on dashboard first run)"
+  fi
+
+  echo
+  if [ "$rc" = 0 ]; then
+    echo "doctor: all clear"
+  else
+    echo "doctor: issues found (marked [!!]) - address them before going further"
+  fi
+  return $rc
+}
+usage() {
+  cat <<EOF
+bambo (alias: bambo-mc) v$BAMBO_VERSION - control the Bedrock server + admin dashboard
+
+  bambo                     start ALL services (server + dashboard)
+  bambo up | down           start / stop all services
+  bambo start | stop | restart    game server only (used by the nightly backup cron)
+  bambo status              status of server + dashboard
+  bambo health [--json]     health summary (JSON for monitoring)
+  bambo doctor              self-diagnostics (run this first when something looks wrong)
+  bambo version             tool + server version / protocol
+
+  bambo dash [start|stop|status|logs|token-new]   admin dashboard (also: bambo --dash)
+  bambo logs [n]            tail the server console (default 60 lines; works stopped too)
+  bambo tail                attach to the live server console (Ctrl-B D to detach)
+  bambo join                show the current join IP:port
+  bambo watch [--once] [--interval=N]   optional watchdog (restarts crashed server)
+
+  bambo players             list players online
+  bambo op add|del|list <player>       grant / revoke / show operators
+  bambo whitelist add|remove|list|on|off|reload <player>
+  bambo world list|save|tp  worlds (create/delete/rename need a MultiWorld plugin)
+  bambo motd "<name>" ["<sub>"]   set the server-list name (edits config + restarts)
+  bambo cmd <console-command>          run ANY command on the server console
+  bambo config get|set|diff|apply      inspect/edit pnx.yml safely (comment-preserving)
+
+  bambo backup [--force]    snapshot worlds+players (stop the server first)
+  bambo restore list|<ts>   roll worlds back to a snapshot
+  bambo setup [version]     download/verify the server jar (pins the deployed version)
+
+  bambo help                this message
+  bambo man                 full manual (piped to your pager)
+
+Env: BAMBO_HEAP (1536M) BAMBO_KEEP (10) BAMBO_DASH_HOST/PORT (127.0.0.1:8787) BAMBO_DASH_TOKEN
+EOF
+}
+manpage() {
+  local man_text
+  man_text="$(cat <<'MAN'
+BAMBO(1)                                                             BAMBO(1)
+
+NAME
+    bambo / bambo-mc - control a local Minecraft Bedrock (PowerNukkitX) server
+    and its admin dashboard, from one command.
+
+SYNOPSIS
+    bambo [command ...]
+    bambo            # no command = start all services
+
+DESCRIPTION
+    bambo wraps one game server (the PNX instance in ./runtime) and a local
+    admin dashboard. Bare 'bambo' starts both. 'start'/'stop'/'restart' touch
+    ONLY the game server - this is deliberate, the nightly backup cron runs
+    'bambo stop && bambo backup && bambo start' and must not disturb the
+    dashboard. All mutating operations (start/stop/backup/restore/setup)
+    are serialized with a lock, so cron and a human cannot race.
+
+    Deployment facts are pinned in runtime/bambo.state.json (PNX tag, sha256,
+    protocol, client version) by 'bambo setup'; 'bambo status'/'health'
+    surface them. Snapshots carry a manifest.json and are verified at creation.
+
+COMMANDS
+    up / down            start / stop every service
+    start / stop / restart   game server only. stop saves worlds and will ask
+                             before force-killing a slow shutdown (no tty = it
+                             force-kills after a 40s grace, so cron never hangs).
+    status               RUNNING/STOPPED for server (with udp/19132 bound?) and dash
+    health [--json]      human or machine-readable health (JSON: tool_version, up,
+                         dash_up, port_bound, pnx_tag, protocol, client_version, join_ip)
+    doctor               diagnostics: system tools, Java 21+, server state, jar,
+                         network, config template, backups, cron, dashboard token perms
+    version              tool version + pinned server facts
+    dash [verb]          start|stop|status|logs|token-new for the dashboard
+                         (--dash works too). token-new rotates dash.token atomically.
+    logs [n] / tail      console history / live console attach (logs falls back to
+                         the server log file when the server is stopped)
+    watch [--once] [--interval=N]
+                         optional watchdog: restarts a crashed server if it was not
+                         intentionally stopped (stop() marks runtime/.bambo.intentional-stop;
+                         start() clears it). Logs to logs/watchdog.log.
+    join                 prints the live LAN address to type into a client
+    players              server 'list' command output
+    op add|del|list      operator management (ops.txt / /op)
+    whitelist ...        whitelist management (/whitelist)
+    world list|save|tp   world inspection + save-all. create/delete/rename are NOT
+                         supported by PNX's built-in /world; add a MultiWorld plugin.
+    cmd <text>           send an arbitrary console command (operator pass-through;
+                         newlines rejected for safety)
+    motd "<name>" ["<sub>"]   set server-list name; edits pnx.yml safely then restarts
+    config get|set|diff|apply
+                         inspect/edit pnx.yml. set edits one key, preserving comments
+                         and quoting only when needed; diff compares live runtime/pnx.yml
+                         against the tracked server/pnx.yml template; apply copies the
+                         template over the live config (backup of the old one kept).
+    backup [--force]     timestamped snapshot of worlds+players+pnx.yml+manifest.json;
+                         refuses to copy a RUNNING LevelDB store unless --force.
+                         Keeps BAMBO_KEEP (default 10) newest in runtime/backups.
+    restore list|<ts>    roll worlds back; keeps the current worlds as
+                         worlds.pre-restore-<ts> so the action is reversible.
+    setup [version]      fetch the server jar from GitHub, resuming interrupted
+                         downloads and verifying the published sha256; records the
+                         deployment state. The previous jar is kept as
+                         powernukkitx.jar.prev for offline rollback.
+
+FILES
+    runtime/             working dir of the server (jar, pnx.yml, worlds, players)
+    runtime/bambo.state.json   pinned deployment facts (tag, sha256, protocol, client)
+    dash.token           admin dashboard token (auto-created, chmod 600)
+    server/pnx.yml       tracked config template (baseline for config diff/apply)
+    logs/                cron/dashboard/watchdog/audit logs
+
+SECURITY
+    The dashboard binds 127.0.0.1 by default. 'bambo --host 0.0.0.0' (via dash env
+    BAMBO_DASH_HOST) exposes 'cmd' to the whole network behind one token - only do
+    this on a trusted LAN. Failed auth attempts are rate-limited per IP; every action
+    is written to logs/dash-audit.log.
+
+ENVIRONMENT
+    BAMBO_HEAP BAMBO_KEEP BAMBO_DASH_HOST BAMBO_DASH_PORT BAMBO_DASH_TOKEN
+
+SEE ALSO  bambo man  |  README.md in the repository  |  docs/RUNBOOK.md
+MAN
+  )"
+  if [ -t 1 ] && command -v less >/dev/null 2>&1; then
+    printf '%s\n' "$man_text" | less
+  else
+    printf '%s\n' "$man_text"
+  fi
+}
+# One command, flag-first: 'bambo --status' and 'bambo status' both work, so the
+# nightly cron (./bambo stop && ./bambo backup && ./bambo start) keeps functioning.
+main() {
+  local a="${1:-}"
+  case "$a" in
+    "")              up ;;
+    -h|-?|help|--help) usage ;;
+    --man|man)       manpage ;;
+    --version|version) version ;;
+    *)
+      local verb="${a#--}"; shift                  # --start -> start, args follow
+      case "$verb" in
+        start)    start ;;
+        stop)     stop ;;
+        restart)  stop; start ;;
+        up)       up ;;
+        down|halt) down ;;
+        status)   status ;;
+        health)   health "${1:-}" ;;
+        doctor)   doctor ;;
+        version)  version ;;
+        dash)     dash "$@" ;;
+        logs)     logs "${1:-60}" ;;
+        tail)     tmux attach -t "$SESSION" ;;
+        join)     join ;;
+        watch)    watch "$@" ;;
+        players)  players ;;
+        op)       op "$@" ;;
+        whitelist|whl) whitelist "$@" ;;
+        world)    world "$@" ;;
+        cmd|console|exec) cmd "$@" ;;
+        motd|name) motd "$@" ;;
+        config)   config "$@" ;;
+        setup)    setup "${1:-}" ;;
+        backup)   backup "${1:-}" ;;
+        restore)  restore "${1:-list}" ;;
+        *)        die "unknown option '$a' - try: bambo --help" ;;
+      esac ;;
+  esac
+}
+main "$@"

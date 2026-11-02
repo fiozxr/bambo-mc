@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+
+jobs:
+  cli:
+    name: CLI + dashboard checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Bash syntax
+        run: |
+          bash -n bambo install.sh bin/bambo-nettest
+      - name: Shellcheck
+        run: shellcheck -x bambo install.sh bin/bambo-nettest
+      - name: Python compile
+        run: python3 -m py_compile bin/bambo-dash.py
+      - name: Non-live test suite
+        run: bash tests/run.sh
+
+  java:
+    name: empty-serve layers (self-tests + probes)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Build + self-tests + probes
+        run: bash empty-serve/run-tests.sh
