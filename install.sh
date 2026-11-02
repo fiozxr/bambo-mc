@@ -243,25 +243,20 @@ fi
 T0=$SECONDS
 spin "analysing system and preparing"
 sleep 0.6; spindown
-
-# --auto: make the machine ready end-to-end (deps, cron, token)
-if [ "$AUTO" = 1 ]; then
-  ensure_deps || exit 2
-  ensure_cron
-  ensure_token
-  # make sure a user configuration exists (created from config.example if missing)
-  if [ ! -f "$REPO/bambo.conf" ]; then
-    cp "$REPO/config.example" "$REPO/bambo.conf" 2>/dev/null && chmod 600 "$REPO/bambo.conf" || true
-    [ -f "$REPO/bambo.conf" ] && printf '  config: created bambo.conf (edit it, then: bambo config apply)\n'
-  fi
+# full setup runs by default: dependencies, cron, token, user config (asked when interactive)
+: "${AUTO:-0}"   # --auto accepted for compatibility (now the default behavior)
+ensure_deps || exit 2
+ensure_cron
+ensure_token
+if [ ! -f "$REPO/bambo.conf" ]; then
+  cp "$REPO/config.example" "$REPO/bambo.conf" 2>/dev/null && chmod 600 "$REPO/bambo.conf" || true
+  [ -f "$REPO/bambo.conf" ] && printf '  config: created bambo.conf (edit it, then: bambo config apply)\n'
 fi
-
 # --dry-run: stop before anything mutates the system
 if [ "$DRYRUN" = 1 ]; then
   printf '\n  (dry-run) stopping before any changes - nothing was installed or modified\n'
   exit 0
 fi
-
 # ensure the server jar (the one large resource) - download+verify only if absent
 EASK=""
 if [ "${ASKOFF:-0}" != 1 ] && [ -t 1 ]; then
@@ -303,7 +298,7 @@ fi
 # keep the loader at least ~3s for a smooth reveal, then finish
 el=$((SECONDS-T0)); [ $el -lt 3 ] && { spin "almost there"; sleep $((3-el)); spindown; }
 banner_done
-if [ "$AUTO" = 1 ] && [ "$EASK" = 1 ]; then
+if [ "$EASK" = 1 ]; then
   printf '\n  Setting up configuration (press Enter to accept defaults)...\n'
   (cd "$REPO" && ./bambo config wizard --apply) || true
 fi

@@ -18,7 +18,7 @@ curl -fsSL https://raw.githubusercontent.com/fiozxr/bambo-mc/main/install.sh | b
 
 That downloads the project, installs everything globally (commands, server jar, dashboard
 token, nightly backup cron), and — when run in a terminal — **asks which server version**
-you want (matching your client, latest stable, or a specific release). Finish with:
+you want (matching your client, latest stable, or a specific release) and the configuration answers (press Enter to accept defaults). Everything is installed globally — all that remains is:
 
 ```sh
 bambo start

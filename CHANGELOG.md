@@ -2,6 +2,15 @@
 
 All notable changes to bambo-mc are documented here (project-initiated work, not upstream PNX).
 
+## [2.5.5] — 2026-11-02 — Fully turnkey installer
+
+### Changed
+- The installer (plain `./install.sh` or `curl ... | bash`) now runs the COMPLETE setup by default: dependencies, interactive version choice, configuration wizard, nightly backup cron, token, global wrappers, dashboard. No `--auto` needed.
+- After install, the only remaining step is `bambo start`.
+- `--auto` remains accepted for compatibility; `--no-ask` disables prompts; `--dry-run` previews safely.
+- Version bump to 2.5.5.
+
+
 ## [2.5.4] — 2026-11-02 — One-command curl installer + professional README
 
 ### Added
