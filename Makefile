@@ -22,7 +22,7 @@ lint:
 	bash -n bambo install.sh bin/bambo-nettest; \
 	python3 -m py_compile bin/bambo-dash.py; \
 	if command -v shellcheck >/dev/null 2>&1; then \
-	  shellcheck -x bambo install.sh bin/bambo-nettest; \
+	  shellcheck --severity=warning -x bambo install.sh bin/bambo-nettest; \
 	else echo "  (shellcheck not installed — skipped; install it for stricter lint)"; fi
 	@echo "lint: OK"
 

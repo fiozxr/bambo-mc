@@ -21,6 +21,10 @@
 #   ./install.sh --auto --dry-run preview everything --auto would do (changes nothing)
 set -uo pipefail
 
+# shellcheck disable=SC1003,SC2016
+# - SC1003: the spinner frame string contains a backslash intentionally.
+# - SC2016: the PATH hint is printed literally for the user (single quotes intentional).
+
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-}")" 2>/dev/null && pwd || echo "")"
 REPO=""; PREFIX=""; SYSTEM=0; UNINSTALL=0; LAUNCH=1; FORCEJAR=0; CHECK=0; AUTO=0; START=0; DRYRUN=0
 
@@ -183,7 +187,7 @@ banner_done(){
 
 if [ "$UNINSTALL" = 1 ]; then echo "bambo-mc uninstaller"; uninstall; exit 0; fi
 
-REPO="$(locate_repo)"; REPOrc=$?
+REPO="$(locate_repo)"
 [ -f "$REPO/bambo" ] || { printf 'bambo install: app folder not found (tried the script dir, ./ and ~/bambo-mc).\nRun install.sh from inside the repo or set BAMBO_REPO=/path/to/bambo-mc.\n' >&2; exit 1; }
 
 # ---------- phase 1: analyse (fast, shown immediately) ----------
