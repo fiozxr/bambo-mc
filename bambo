@@ -18,7 +18,7 @@ set -uo pipefail
 # - SC2015: helpers ok()/bad()/info() always exit 0 (they only print), so "A && B || C" is safe.
 # - SC2012: ls is used deliberately on directories this project owns (backups/worlds).
 
-BAMBO_VERSION="2.4.0"
+BAMBO_VERSION="2.5.0"
 
 # cron's default PATH is /usr/bin:/bin, which omits /usr/sbin - where `ip` lives.
 # Without this, lan_ip()/join() silently return nothing when run from a cron job.
@@ -1158,6 +1158,7 @@ restore() {
 # with docs/VERSIONS.md; unknown tags record the tag only.
 pnx_facts() {
   case "$1" in
+    3.0.6) echo "2225|1.26.60" ;;
     3.0.5) echo "2193|1.26.50" ;;
     3.0.4) echo "2169|1.26.45" ;;
     3.0.3) echo "2168|1.26.44" ;;

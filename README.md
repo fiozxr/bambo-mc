@@ -8,7 +8,7 @@ admin tooling for a small group (up to 4 players) on one WiFi / phone hotspot.
 **No port forwarding, no internet account required for players to join.**
 
 ```
-bambo-mc ── v2.3.0 (worlds + user management)
+bambo-mc ── v2.5.0 (PNX 3.0.6 / protocol 2225)
 ├── bambo            the control CLI (services, dash, players/op/whitelist/world/cmd,
 │                    config, backup/restore/setup, doctor/health, help/man)
 ├── bin/             dashboard (token-gated, stdlib-only) + LAN probe
@@ -176,7 +176,7 @@ See `docs/RUNBOOK.md` for the restore drill.
 ## Version alignment
 
 Bedrock clients and servers must share a **protocol number**. Current deployment:
-PNX **3.0.5** ↔ Bedrock **1.26.50** ↔ protocol **2193**. When a client auto-updates
+PNX **3.0.6** ↔ Bedrock **1.26.60** ↔ protocol **2225**. When a client auto-updates
 past the server, see `docs/VERSIONS.md` for the cheapest fix.
 
 ## Layout notes

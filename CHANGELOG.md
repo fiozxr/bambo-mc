@@ -2,6 +2,18 @@
 
 All notable changes to bambo-mc are documented here (project-initiated work, not upstream PNX).
 
+## [2.5.0] — 2026-11-02 — Engine upgrade to PNX 3.0.6
+
+### Changed
+- **Server engine upgraded to PowerNukkitX 3.0.6** (2026-10-28): Minecraft 1.26.60,
+  protocol 2225. Previous jar preserved as `powernukkitx.jar.prev` for offline rollback.
+- `pnx_facts` and `docs/VERSIONS.md` updated for 3.0.6 (2225 / 1.26.60).
+- Tool/dashboard version bump to 2.5.0.
+
+### Action required (clients)
+- Every client must now be on **Bedrock 1.26.60** (protocol 2225). If a device cannot
+  update, roll the server back with `bambo setup 3.0.5`.
+
 ## [2.4.0] — 2026-11-02 — Invented the missing pieces
 
 ### Added
