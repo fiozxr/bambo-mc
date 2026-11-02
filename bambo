@@ -18,7 +18,7 @@ set -uo pipefail
 # - SC2015: helpers ok()/bad()/info() always exit 0 (they only print), so "A && B || C" is safe.
 # - SC2012: ls is used deliberately on directories this project owns (backups/worlds).
 
-BAMBO_VERSION="2.5.1"
+BAMBO_VERSION="2.5.2"
 
 # cron's default PATH is /usr/bin:/bin, which omits /usr/sbin - where `ip` lives.
 # Without this, lan_ip()/join() silently return nothing when run from a cron job.
@@ -699,8 +699,32 @@ notify() {
 }
 
 # ---- upstream update awareness ----
+update_choose() {
+  local detected tag ans
+  detected="$(client_detect)"
+  echo "client version detected: ${detected:-unknown}"
+  tag="$(client_to_pnx "$detected")"
+  if [ -n "$tag" ]; then
+    printf 'Upgrade to matching PNX %s (protocol %s)? [Y/n] ' "$tag" "$(pnx_facts "$tag" | cut -d'|' -f1)"
+    read -r ans || true
+    case "${ans:-y}" in
+      y|Y|"") echo "$tag" ;;
+      *) echo "" ;;
+    esac
+  else
+    printf 'No known server matches version %s. Keep upgrading to latest stable? [Y/n] ' "${detected:-detected}"
+    read -r ans || true
+    case "${ans:-y}" in
+      n|N) die "cancelled by user" ;;
+    esac
+    echo ""
+  fi
+}
 update() {
-  local sub="${1:-check}"
+  local sub="${1:-check}" ask=0 want=""
+  case "$sub" in
+    ask|--ask) ask=1; sub=apply ;;
+  esac
   case "$sub" in
     check)
       local current latest
@@ -721,19 +745,23 @@ update() {
       if [ "$current" = "$latest" ]; then
         echo "status: up to date"
       else
-        echo "status: UPDATE AVAILABLE - run 'bambo update apply'"
+        echo "status: UPDATE AVAILABLE - run 'bambo update apply' (or 'bambo update --ask')"
       fi
       ;;
     apply)
+      if [ "$ask" = 1 ]; then
+        [ -t 0 ] || die "update --ask needs an interactive terminal (use 'bambo update apply' for latest)"
+        want="$(update_choose)"
+      fi
       local was_up=0
       is_up && was_up=1
-      [ -f "$JAR" ] || { echo "no server jar yet - fetching + installing..."; setup; return 0; }
+      [ -f "$JAR" ] || { echo "no server jar yet - fetching + installing..."; setup ${want:+$want}; return 0; }
       if [ "$was_up" = 1 ]; then
         echo "stopping server for safe upgrade..."
         stop
       fi
       backup || { warn "backup failed - aborting update"; [ "$was_up" = 1 ] && start; return 1; }
-      setup || { warn "setup failed - server left on the previous version"; [ "$was_up" = 1 ] && start; return 1; }
+      setup ${want:+$want} || { warn "setup failed - server left on the previous version"; [ "$was_up" = 1 ] && start; return 1; }
       notify update "server upgraded to PNX $(state_get tag)"
       if [ "$was_up" = 1 ]; then
         echo "restarting server..."
@@ -742,7 +770,7 @@ update() {
         echo "server was stopped; start it with 'bambo start' when ready."
       fi
       ;;
-    *) die "update: use check|apply" ;;
+    *) die "update: use check|apply|--ask" ;;
   esac
 }
 

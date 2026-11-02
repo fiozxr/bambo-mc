@@ -19,6 +19,7 @@
 #                               jar, token, nightly backup cron, wrappers, dashboard
 #   ./install.sh --auto --start   also start the game server after installing
 #   ./install.sh --auto --dry-run preview everything --auto would do (changes nothing)
+#   ./install.sh --auto --ask (default when interactive; --no-ask to disable)
 #   ./install.sh --auto --ask  prompt: match installed client version, or install latest
 set -uo pipefail
 
@@ -27,7 +28,7 @@ set -uo pipefail
 # - SC2016: the PATH hint is printed literally for the user (single quotes intentional).
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-}")" 2>/dev/null && pwd || echo "")"
-REPO=""; PREFIX=""; SYSTEM=0; UNINSTALL=0; LAUNCH=1; FORCEJAR=0; CHECK=0; AUTO=0; START=0; DRYRUN=0
+REPO=""; PREFIX=""; SYSTEM=0; UNINSTALL=0; LAUNCH=1; FORCEJAR=0; CHECK=0; AUTO=0; START=0; DRYRUN=0; ASK=0; ASKOFF=0
 
 # ---- locate the app folder (works run-from-repo AND via 'curl | bash') ----
 locate_repo() {
@@ -133,6 +134,7 @@ for a in "$@"; do
     --auto)     AUTO=1 ;;
     --start)    START=1 ;;
     --dry-run)  DRYRUN=1 ;;
+--ask)      ASK=1 ;;
     --version)  echo "bambo-mc installer"; exit 0 ;;
     --system)   SYSTEM=1 ;;
     --uninstall) UNINSTALL=1 ;;
@@ -226,9 +228,15 @@ if [ "$DRYRUN" = 1 ]; then
 fi
 
 # ensure the server jar (the one large resource) - download+verify only if absent
+local EASK
+if [ "${ASK:-0}" = 1 ] || { [ "${ASKOFF:-0}" != 1 ] && [ -t 1 ]; }; then
+  EASK=1
+else
+  EASK=0
+fi
 if [ ! -f "$REPO/runtime/powernukkitx.jar" ] || [ "$FORCEJAR" = 1 ]; then
   spin "downloading and verifying the server (this can take a while)"
-  "$REPO/bambo" --setup${ASK:+ --ask} >/tmp/bambo-install-jar.log 2>&1; jar_rc=$?
+  "$REPO/bambo" --setup${EASK:+ --ask} >/tmp/bambo-install-jar.log 2>&1; jar_rc=$?
   spindown
   [ $jar_rc -eq 0 ] || printf '  \033[33m!\033[0m jar setup had issues (see /tmp/bambo-install-jar.log)\n'
 else
@@ -260,6 +268,10 @@ fi
 # keep the loader at least ~3s for a smooth reveal, then finish
 el=$((SECONDS-T0)); [ $el -lt 3 ] && { spin "almost there"; sleep $((3-el)); spindown; }
 banner_done
+if [ "$AUTO" = 1 ] && [ "$EASK" = 1 ]; then
+  printf '\n  Setting up configuration (press Enter to accept defaults)...\n'
+  (cd "$REPO" && ./bambo config wizard --apply) || true
+fi
 
 if [ "$START" = 1 ]; then
   echo "  starting services (server + dashboard)..."

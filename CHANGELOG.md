@@ -2,6 +2,15 @@
 
 All notable changes to bambo-mc are documented here (project-initiated work, not upstream PNX).
 
+## [2.5.2] — 2026-11-02 — Ask by default; updates ask too
+
+### Changed
+- Interactive installs now ask by default: `install.sh --auto` / `bambo bootstrap` prompt for the server release matching the detected client version vs latest. Add `--no-ask` to skip and always take latest.
+- `bambo update --ask` (alias `update ask`): ask before an upgrade whether to match the detected client version or go to latest stable.
+- During interactive installs, the configuration wizard runs (`bambo config wizard --apply`) so server name/max players/etc. are asked up front.
+- Tool/dashboard version bump to 2.5.2.
+
+
 ## [2.5.1] — 2026-11-02 — Client-version matching installer
 
 ### Added
