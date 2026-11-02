@@ -121,7 +121,7 @@ ensure_token() {
     printf '    (dry-run) would generate dash.token\n'
     return 0
   fi
-  (cd "$REPO" && ./bambo dash token-new) >/dev/null 2>&1 \
+  (cd "$REPO" && BAMBO_ROOT= ./bambo dash token-new) >/dev/null 2>&1 \
     && printf '    dash.token created\n' \
     || printf '    (token generation deferred to dashboard first run)\n'
 }
@@ -213,8 +213,8 @@ if [ "$AUTO" = 1 ]; then
   ensure_token
   # make sure a user configuration exists (created from config.example if missing)
   if [ ! -f "$REPO/bambo.conf" ]; then
-    (cd "$REPO" && ./bambo config init) >/dev/null 2>&1 || true
-    printf '  config: created bambo.conf (edit it, then: bambo config apply)\n'
+    cp "$REPO/config.example" "$REPO/bambo.conf" 2>/dev/null && chmod 600 "$REPO/bambo.conf" || true
+    [ -f "$REPO/bambo.conf" ] && printf '  config: created bambo.conf (edit it, then: bambo config apply)\n'
   fi
 fi
 
