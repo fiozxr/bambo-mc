@@ -134,7 +134,7 @@ for a in "$@"; do
     --auto)     AUTO=1 ;;
     --start)    START=1 ;;
     --dry-run)  DRYRUN=1 ;;
---ask)      ASK=1 ;;
+--ask)      : ;; # accepted for compatibility (asking is the default)
     --version)  echo "bambo-mc installer"; exit 0 ;;
     --system)   SYSTEM=1 ;;
     --uninstall) UNINSTALL=1 ;;
