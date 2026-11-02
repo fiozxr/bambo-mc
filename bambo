@@ -596,6 +596,7 @@ if not hit:
     out.append("\n" + key + "=" + val + "\n")
 tmp = path + ".tmp"
 open(tmp, "w", encoding="utf-8").writelines(out)
+os.chmod(tmp, 0o600)
 os.replace(tmp, path)
 PY
   export "$key=$val"
@@ -698,6 +699,7 @@ for k, q, d in QS:
             val = prev
     lines.append(k + "=" + val)
 open(path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+os.chmod(path, 0o600)
 PY
   echo "configuration written to $CONF"
   if [ "$applynow" = 1 ]; then

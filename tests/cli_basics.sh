@@ -44,6 +44,7 @@ check_contains "$out" "created" "config init message"
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" config set BAMBO_MAX_PLAYERS 6 2>&1)"
 check_contains "$out" "BAMBO_MAX_PLAYERS = 6" "config set reports value"
 grep -q 'BAMBO_MAX_PLAYERS=6' "$FIX/bambo.conf" && ok "config set wrote conf" || fail "config set did not write conf"
+[ "$(stat -c %a "$FIX/bambo.conf")" = "600" ] && ok "bambo.conf perms 600" || fail "bambo.conf perms not 600"
 
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" config apply 2>&1)"
 grep -q 'maxPlayers: 6' "$FIX/runtime/pnx.yml" && ok "config apply deployed maxPlayers" || fail "config apply did not deploy"
