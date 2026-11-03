@@ -2,6 +2,76 @@
 
 All notable changes to bambo-mc are documented here (project-initiated work, not upstream PNX).
 
+## [2.5.6] — 2026-11-03 — Bug-fix pass: dashboard, console output, rollback
+
+### Fixed — dashboard (`bin/bambo-dash.py`)
+- The log tail was unreadable: `log_tail()` "stripped" colour codes by deleting the
+  characters `§eabrc6`, which also ate every `e`, `a`, `b`, `r`, `c` and `6` in the log
+  (`Loading is complete for level` rendered as `Loding is omplt fo lvl`, `1.26.0` as
+  `1.2.0`). A colour code is now removed as `§` plus its one code character, along with
+  ANSI sequences.
+- Players / TPS / Plugins displayed the *previous* command's output (see the
+  `console_out` fix below) — the dashboard was faithfully relaying stale text.
+- `/api/status` took ~2.1s while the page polls it every 3s, so the State card was
+  almost always stale. It shelled out three times and re-read the whole log per poll;
+  `join`, `backups` and `others` are now memoized (37-44ms warm).
+- A machine without `tmux` got a permanent 500 on `/api/status`: `running()` let
+  `FileNotFoundError` escape. It now reports "stopped".
+- Auth: a token containing a non-ASCII character raised `TypeError` in
+  `hmac.compare_digest` and returned HTTP 500 — a path that never reached the
+  brute-force rate limiter. Both sides are compared as bytes, so it is a clean 401.
+- HTTP keep-alive desync: the 413, 404-with-body and chunked paths left the request
+  body unread in the socket, so the next request on that reused connection was parsed
+  as garbage. The connection is now closed instead.
+- Long actions (backup, restart, motd) could be killed at the 120s subprocess timeout
+  mid-transfer; they now get 600s and report a timeout honestly.
+- UI: the `refresh` button had no handler, and both `user|list` buttons threw a JS
+  `TypeError` (missing entry in the selector map).
+
+### Fixed — CLI (`bambo`)
+- `console_out()` slept a fixed 0.8s and then dumped the tail of the pane, so on a busy
+  server `tps`, `players`, `plugins` and `whitelist list` returned the PREVIOUS
+  command's scrollback instead of their answer. It now waits for the console's own
+  reply and prints only what followed the echoed command.
+- `bambo tps` sent `/tps`, which PowerNukkitX rejects (`Unknown command: tps`). The real
+  command is `status`, which reports `Current TPS`.
+- `bambo rollback` was unreachable: the functions existed but no dispatcher case, help
+  entry or manual entry did, so every form failed with "unknown option".
+- `bambo rollback --prev` blanked the deployment state (writing `"tag": ""`), breaking
+  `version`, `join` and `doctor`. `setup` now records the outgoing jar's `prev_*` facts,
+  and `--prev` swaps jars *and* facts both ways — repeatable, and it refuses a legacy
+  jar with no recorded version instead of corrupting state.
+- All of `rollback_do`'s failure recovery was dead code, because `die()` exits the
+  process: a failed backup left the server stopped with no restart. Its callees now run
+  in subshells so the branches execute.
+- The manual told users to run `bambo --host 0.0.0.0`, which is not a command. Corrected
+  to the documented env-var mechanism.
+
+### Fixed — installer (`install.sh`)
+- `--no-ask` was documented but unhandled: it fell through to "unknown option" and
+  exited 2, so non-interactive installs could not disable prompting.
+- `--dry-run` was not pure — it created `bambo.conf` while printing "nothing was
+  installed or modified".
+- Install logs moved from predictable `/tmp/bambo-install-*.log` paths into the app's
+  `logs/` (a fixed /tmp file written by a root-run installer is a symlink trap).
+- `--uninstall` deleted any wrapper named `bambo*` in the bin dir when it could not
+  identify the install, and matched the app path as a regex rather than a fixed string.
+  It now refuses to remove wrappers it cannot attribute.
+- `--help` showed a truncated option list (the header's last three lines were cut) and
+  printed nothing at all when piped through `curl | bash`, where `$0` is the shell.
+
+### Tests
+- **`tests/cli_basics.sh` never called `summary()`** — it always exited 0, so every CLI
+  assertion failure was silently ignored and CI could not go red. It now reports its
+  tally and gates. (55 checks.)
+- `dash_smoke`: replaced the racy fixed `sleep 1.5` with a readiness poll, and added a
+  regression test for the log-tail mangling.
+- Added rollback coverage: dispatch, unknown-version rejection, the two-way jar+state
+  swap (skipped when a real server session is live), and refusal on an unrecorded jar.
+- Version assertions now derive from `BAMBO_VERSION` instead of hard-coding it, and the
+  dashboard's version is checked against the CLI's so they cannot drift apart.
+
+
 ## [2.5.5] — 2026-11-02 — Fully turnkey installer
 
 ### Changed

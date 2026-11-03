@@ -17,6 +17,7 @@ import html
 import io
 import json
 import os
+import re
 import secrets
 import signal
 import socket
@@ -26,7 +27,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-TOOL_VERSION = "2.5.5"
+TOOL_VERSION = "2.5.6"
 MAX_BODY = 64 * 1024          # request body cap (bytes)
 MAX_ARGS = 8                  # max args in one admin action
 MAX_ARG_LEN = 256             # max length of a single arg
@@ -67,6 +68,11 @@ ACTIONS = {
 # string); bambo itself validates the subcommand and refuses bad input. 'cmd' is the raw
 # operator pass-through - that is why every POST here is token-gated.
 ADMIN = {"players", "op", "whitelist", "world", "user", "plugins", "broadcast", "tps", "cmd", "motd", "config"}
+
+# These stop the server, tar the worlds or restart the engine; the ~40s restart plus
+# a large world copy must not be killed by the read-only 120s timeout mid-transfer.
+SLOW = ACTIONS.keys() | {"motd", "world", "config"}
+SLOW_TIMEOUT = 600
 
 
 # ---------------- token ----------------
@@ -123,17 +129,42 @@ def rate_limited(ip):
 
 
 # ---------------- backend helpers ----------------
-def sh(cmd):
+_cache = {}
+_cache_lock = threading.Lock()
+
+
+def cached(key, ttl, fn):
+    """Memoize fn for ttl seconds. The browser polls /api/status every 3s and
+    these fields shell out (join/others) or walk the filesystem."""
+    now = time.time()
+    with _cache_lock:
+        hit = _cache.get(key)
+        if hit and now - hit[0] < ttl:
+            return hit[1]
+    val = fn()
+    with _cache_lock:
+        _cache[key] = (now, val)
+    return val
+
+
+def sh(cmd, timeout=120):
     try:
         return subprocess.run(cmd, capture_output=True, text=True,
-                              timeout=120, cwd=ROOT)
+                              timeout=timeout, cwd=ROOT)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            cmd, 124, "", "timed out after %ds (the command was killed mid-run - "
+                           "check 'bambo status' and the logs)" % timeout)
     except Exception as e:
         return subprocess.CompletedProcess(cmd, 1, "", str(e))
 
 
 def running():
-    return subprocess.run(["tmux", "has-session", "-t", SESSION],
-                          capture_output=True).returncode == 0
+    try:
+        return subprocess.run(["tmux", "has-session", "-t", SESSION],
+                              capture_output=True).returncode == 0
+    except OSError:
+        return False   # tmux not installed - report stopped instead of failing the whole status
 
 
 def port_bound():
@@ -149,12 +180,31 @@ def join_line():
     return "(run bambo join manually)"
 
 
-def log_tail(n=200):
+MC_COLOR = re.compile(r"§[0-9a-fk-orA-FK-OR]")
+ANSI_CSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def log_tail(n=200, max_bytes=256 * 1024):
+    """Last n lines of the server log, with colour codes removed.
+
+    Reads backwards from the end: the log grows all day, so slurping the whole
+    file on every 3s poll would read megabytes to display two hundred lines.
+    """
     if not os.path.exists(SERVER_LOG):
         return "(no log yet)"
-    with io.open(SERVER_LOG, "r", errors="replace") as f:
-        lines = f.readlines()[-n:]
-    return "".join(lines).translate({ord(c): None for c in "§eabrc6"})
+    try:
+        size = os.path.getsize(SERVER_LOG)
+        with open(SERVER_LOG, "rb") as f:
+            if size > max_bytes:
+                f.seek(size - max_bytes)
+                f.readline()          # drop the partial line the seek landed in
+            data = f.read(max_bytes)
+    except OSError as e:
+        return "(cannot read log: %s)" % e
+    lines = data.decode("utf-8", "replace").splitlines(True)[-n:]
+    # A colour code is § plus its ONE following code character - deleting the
+    # letters themselves would eat every e/a/b/r/c in the text.
+    return ANSI_CSI.sub("", MC_COLOR.sub("", "".join(lines)))
 
 
 def backups():
@@ -194,9 +244,9 @@ def status():
     return {
         "running": running(),
         "port_bound": port_bound(),
-        "join": join_line(),
-        "backups": backups(),
-        "others": other_servers(),
+        "join": cached("join", 15.0, join_line),
+        "backups": cached("backups", 30.0, backups),
+        "others": cached("others", 60.0, other_servers),
         "players": None,   # not polled; see console
     }
 PAGE_CSS_HTML = """<!doctype html><meta charset=utf-8><title>bambo-mc admin</title>
@@ -319,6 +369,7 @@ const $=s=>document.querySelector(s);
 function esc(s){const d=document.createElement('div');d.textContent=s==null?'':String(s);return d.innerHTML}
 function tok(){return $('#tok').value.trim()}
 $('#savetok').onclick=()=>{localStorage.setItem('es_tok',tok());};
+$('#reload').onclick=refresh;
 window.addEventListener('load',()=>{const t=localStorage.getItem('es_tok'); if(t) $('#tok').value=t;});
 async function j(u,o){const r=await fetch(u,o);return r.json()}
 async function refresh(){
@@ -354,7 +405,7 @@ async function run(action,args,sel){
 document.querySelectorAll('button[data-a]').forEach(b=>b.onclick=()=>power(b.dataset.a));
 document.querySelectorAll('button[data-run]').forEach(b=>b.onclick=()=>{
   const [a,...rest]=b.dataset.run.split('|');
-  const sel={players:'#pplayers',op:'#pops',whitelist:'#pwhl',world:'#pworld'}[a];
+  const sel={players:'#pplayers',op:'#pops',whitelist:'#pwhl',world:'#pworld',user:'#pusers'}[a]||'#out';
   run(a,rest,sel);
 });
 document.querySelectorAll('button[data-op]').forEach(b=>b.onclick=()=>{
@@ -432,12 +483,20 @@ class H(BaseHTTPRequestHandler):
         self._send(code, json.dumps(obj), "application/json")
 
     def _read_body(self):
-        """Read a request body, enforcing a size cap."""
+        """Read a request body, enforcing a size cap.
+
+        Either the body is consumed or the connection is closed: leaving bytes in
+        the socket would be parsed as the next request on a keep-alive connection.
+        """
+        if self.headers.get("Transfer-Encoding", "").lower().strip() == "chunked":
+            self.close_connection = True    # chunked has no declared length to cap
+            return b"{}"
         try:
             n = int(self.headers.get("Content-Length", 0))
         except (TypeError, ValueError):
             n = 0
         if n > MAX_BODY:
+            self.close_connection = True
             return None
         if n <= 0:
             return b"{}"
@@ -474,6 +533,7 @@ class H(BaseHTTPRequestHandler):
         try:
             if not self.path.startswith("/api/action"):
                 code = 404
+                self.close_connection = True   # a POST here carries a body we must not strand
                 self._json(404, {"ok": False, "error": "not found"})
                 return
             raw = self._read_body()
@@ -487,9 +547,11 @@ class H(BaseHTTPRequestHandler):
                 code = 400
                 self._json(400, {"ok": False, "error": "bad json"})
                 return
-            # token check (constant-time)
-            provided = str(req.get("token", ""))
-            if not hmac.compare_digest(provided, TOKEN):
+            # token check (constant-time; bytes, because compare_digest raises
+            # TypeError on non-ASCII str - that turned a wrong token into a 500
+            # that skipped the rate limiter entirely)
+            provided = str(req.get("token", "")).encode("utf-8", "replace")
+            if not hmac.compare_digest(provided, TOKEN.encode("utf-8", "replace")):
                 code = 401
                 if rate_limited(ip):
                     code = 429
@@ -521,8 +583,10 @@ class H(BaseHTTPRequestHandler):
                 code = 400
                 self._json(400, {"ok": False, "error": "unknown action"})
                 return
-            r = sh(argv)
+            r = sh(argv, timeout=SLOW_TIMEOUT if action in SLOW else 120)
             out = (r.stdout or "") + (r.stderr or "")
+            with _cache_lock:
+                _cache.clear()   # an action may have changed backups/join/state the page shows
             code = 200
             self._json(200, {"ok": r.returncode == 0, "code": r.returncode,
                              "output": out[-4000:]})

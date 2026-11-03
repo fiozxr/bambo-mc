@@ -9,8 +9,17 @@ t "cli basics"
 FIX="$(make_fixture)"
 export BAMBO_ROOT="$FIX"
 
+# the declared version, not a hard-coded one: the assertions below still prove the
+# CLI reports it consistently, but a release bump no longer needs test edits.
+TV="$(sed -n 's/^BAMBO_VERSION="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$ROOT/bambo" | head -1)"
+[ -n "$TV" ] && ok "version is declared in bambo ($TV)" || fail "could not read BAMBO_VERSION from $ROOT/bambo"
+
+DASH_TV="$(sed -n 's/^TOOL_VERSION = "\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$ROOT/bin/bambo-dash.py" | head -1)"
+[ "$DASH_TV" = "$TV" ] && ok "dashboard version matches the CLI ($DASH_TV)" \
+                       || fail "dashboard says $DASH_TV but CLI says $TV - bump them together"
+
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" version 2>&1)"
-check_contains "$out" "bambo-mc v2.5.5" "version prints tool version"
+check_contains "$out" "bambo-mc v$TV" "version prints tool version"
 
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" help 2>&1)"
 check_contains "$out" "bambo" "help runs"
@@ -26,7 +35,7 @@ check_contains "$out" "dash" "status shows dash"
 
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" health --json 2>&1)"
 echo "$out" | python3 -m json.tool >/dev/null 2>&1 && ok "health --json is valid JSON" || fail "health --json invalid"
-check_contains "$out" '"tool_version":"2.5.5"' "health json carries tool_version"
+check_contains "$out" '"tool_version":"'"$TV"'"' "health json carries tool_version"
 
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" bootstrap --dry-run 2>&1)"
 check_contains "$out" "(dry-run)" "bootstrap --dry-run previews"
@@ -136,4 +145,58 @@ if BAMBO_ROOT="$FIX" "$ROOT/bambo" setup --ask </dev/null >/dev/null 2>&1; then
 else
   ok "setup --ask guards non-interactive"
 fi
+
+# ---- rollback: must be reachable, and must swap jars AND facts both ways ----
+out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" rollback --list 2>&1)"
+check_contains "$out" "known releases" "rollback --list is dispatchable"
+check_contains "$out" "current" "rollback --list shows the current jar"
+
+if BAMBO_ROOT="$FIX" "$ROOT/bambo" rollback 99.99.99 >/dev/null 2>&1; then
+  fail "rollback to an unknown version should fail"
+else
+  ok "rollback rejects an unknown version"
+fi
+
+out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" man 2>&1)"
+check_contains "$out" "rollback" "man page documents rollback"
+
+# a fixture with a recorded previous jar: rollback --prev swaps both ways offline.
+# Skipped when the real server is up: the tmux session name is fixed, so --prev
+# would stop and restart the actual 'bambo-mc' session rather than the fixture.
+if command -v tmux >/dev/null 2>&1 && tmux has-session -t bambo-mc 2>/dev/null; then
+  echo "  SKIP  rollback --prev swap tests (live 'bambo-mc' session; --prev would stop it)"
+else
+RB_FIX="$(make_fixture)"
+mkdir -p "$RB_FIX/runtime"
+echo NEWJAR > "$RB_FIX/runtime/powernukkitx.jar"
+echo OLDJAR > "$RB_FIX/runtime/powernukkitx.jar.prev"
+cat > "$RB_FIX/runtime/bambo.state.json" <<'EOF'
+{"tag":"3.0.6","sha256":"aaa","size":"8","protocol":"2225","client_version":"1.26.60",
+ "prev_tag":"3.0.5","prev_sha256":"bbb","prev_size":"8","prev_protocol":"2193","prev_client_version":"1.26.50"}
+EOF
+out="$(BAMBO_ROOT="$RB_FIX" "$ROOT/bambo" rollback --prev 2>&1)"
+check_contains "$out" "PNX 3.0.5" "rollback --prev reports the version it restored"
+check "$(cat "$RB_FIX/runtime/powernukkitx.jar")" "OLDJAR" "rollback --prev installs the previous jar"
+check "$(cat "$RB_FIX/runtime/powernukkitx.jar.prev")" "NEWJAR" "rollback --prev keeps the outgoing jar for undo"
+out="$(BAMBO_ROOT="$RB_FIX" "$ROOT/bambo" version 2>&1)"
+check_contains "$out" "PNX 3.0.5" "state follows the jar (tag)"
+check_contains "$out" "protocol 2193" "state follows the jar (protocol)"
+out="$(BAMBO_ROOT="$RB_FIX" "$ROOT/bambo" rollback --prev 2>&1)"
+check_contains "$out" "PNX 3.0.6" "rollback --prev is repeatable (toggles back)"
+check "$(cat "$RB_FIX/runtime/powernukkitx.jar")" "NEWJAR" "second --prev restores the newer jar"
+
+# --prev must refuse when the previous jar has no recorded version
+NOFACT="$(make_fixture)"
+mkdir -p "$NOFACT/runtime"
+echo CUR > "$NOFACT/runtime/powernukkitx.jar"
+echo ORPHAN > "$NOFACT/runtime/powernukkitx.jar.prev"
+cat > "$NOFACT/runtime/bambo.state.json" <<'EOF'
+{"tag":"3.0.6","sha256":"aaa","size":"4","protocol":"2225","client_version":"1.26.60"}
+EOF
+out="$(BAMBO_ROOT="$NOFACT" "$ROOT/bambo" rollback --prev 2>&1)"
+check_contains "$out" "no recorded version" "rollback --prev refuses an unrecorded previous jar"
+check "$(cat "$NOFACT/runtime/powernukkitx.jar")" "CUR" "refused rollback leaves the jar untouched"
+fi
+
+summary
 

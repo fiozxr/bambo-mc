@@ -12,7 +12,19 @@ export BAMBO_DASH_TOKEN="$TOK"
 
 python3 "$ROOT/bin/bambo-dash.py" --host 127.0.0.1 --port $PORT >/tmp/bambo-dash-smoke.log 2>&1 &
 DPID=$!
-sleep 1.5
+# Poll for readiness: a fixed sleep made this suite race the interpreter's startup
+# and report 10 phantom failures whenever the machine was busy.
+ready=0
+for i in $(seq 1 100); do
+  if curl -s -m 1 -o /dev/null "http://127.0.0.1:$PORT/api/health" 2>/dev/null; then ready=1; break; fi
+  kill -0 "$DPID" 2>/dev/null || break
+  sleep 0.1
+done
+if [ "$ready" != 1 ]; then
+  fail "dashboard never answered /api/health (log: $(tail -3 /tmp/bambo-dash-smoke.log 2>/dev/null))"
+  kill -TERM "$DPID" 2>/dev/null
+  summary
+fi
 
 # page + headers
 hdr="$(curl -s -D - -o /dev/null http://127.0.0.1:$PORT/)"
@@ -29,6 +41,28 @@ check_contains "$out" '"ok": true' "health endpoint"
 out="$(curl -s http://127.0.0.1:$PORT/api/status)"
 echo "$out" | python3 -m json.tool >/dev/null 2>&1 && ok "status is valid JSON" || fail "status invalid"
 check_contains "$out" '"running"' "status has running key"
+
+# The log tail must strip §-codes without deleting the letters they are named
+# after: the old translate() ate every e/a/b/r/c/6 and turned the log into noise.
+python3 - "$ROOT/bin/bambo-dash.py" <<'PY'
+import importlib.util, os, sys, tempfile
+spec = importlib.util.spec_from_file_location("dash", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+fd, path = tempfile.mkstemp(suffix=".log"); os.close(fd)
+with open(path, "w") as f:
+    f.write("§aLoading pnx.yml\n§eSelected English (eng) as the base language\n\x1b[0m§bDone (50.5s)!\n")
+m.SERVER_LOG = path
+out = m.log_tail()
+os.unlink(path)
+missing = [w for w in ("Loading", "Selected", "English", "base", "language", "Done", "50.5") if w not in out]
+if missing:
+    print("mangled, lost words: %s" % ",".join(missing)); sys.exit(1)
+if "§" in out or "\x1b" in out:
+    print("colour/ANSI codes left in output"); sys.exit(1)
+PY
+[ $? = 0 ] && ok "log tail strips colour codes without eating letters" \
+           || fail "log tail mangles the server log"
 
 # bad token -> 401
 code="$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:$PORT/api/action \

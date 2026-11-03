@@ -18,7 +18,7 @@ set -uo pipefail
 # - SC2015: helpers ok()/bad()/info() always exit 0 (they only print), so "A && B || C" is safe.
 # - SC2012: ls is used deliberately on directories this project owns (backups/worlds).
 
-BAMBO_VERSION="2.5.5"
+BAMBO_VERSION="2.5.6"
 
 # cron's default PATH is /usr/bin:/bin, which omits /usr/sbin - where `ip` lives.
 # Without this, lan_ip()/join() silently return nothing when run from a cron job.
@@ -152,11 +152,37 @@ console() {
   echo "sent to console: $*"
 }
 
+_pane_lines() { tmux capture-pane -pt "$SESSION" -S -2000 2>/dev/null | grep -cvE '^[[:space:]]*$'; }
+
 console_out() {
   is_up || die "server not running - start it first (bambo start)"
+  local mark base n quiet=0 grew=0 i all mark_line reply
+  mark="$(_pane_lines)"; base="$mark"
   tmux send-keys -t "$SESSION" "$*" C-m
-  sleep 0.8
-  tmux capture-pane -pt "$SESSION" -S -30 2>/dev/null | grep -vE '^\s*$' | tail -18
+  # Wait for the console's OWN reply instead of a fixed 0.8s nap: while the server
+  # was busy the nap always showed the PREVIOUS command's output, so tps, players
+  # and plugins reported stale lines. Echoing the command adds one line, so growth
+  # past mark+1 means an answer has begun; return once the answer stops growing.
+  for i in $(seq 1 100); do
+    sleep 0.25
+    n="$(_pane_lines)"
+    if [ "$n" -gt "$base" ]; then
+      base="$n"; quiet=0
+      [ "$n" -gt "$((mark + 1))" ] && grew=1
+    elif [ "$grew" = 1 ]; then
+      quiet=$((quiet + 1))
+      [ "$quiet" -ge 6 ] && break
+    fi
+  done
+  # Print only what followed THIS command - a fixed tail -18 still leaked the
+  # previous block whenever two actions ran back to back.
+  all="$(tmux capture-pane -pt "$SESSION" -S -2000 2>/dev/null | grep -vE '^[[:space:]]*$')"
+  mark_line="$(printf '%s\n' "$all" | grep -n -F "> $*" | tail -1 | cut -d: -f1)"
+  if [ -n "$mark_line" ]; then
+    reply="$(printf '%s\n' "$all" | tail -n +"$((mark_line + 1))" | grep -vE '^>[[:space:]]*$')"
+    [ -n "$reply" ] && { printf '%s\n' "$reply" | tail -25; return 0; }
+  fi
+  printf '%s\n' "$all" | tail -18
 }
 start() {
   [ -f "$JAR" ] || die "missing $JAR - run ./bambo setup first"
@@ -562,7 +588,7 @@ user() {
 }
 plugins() { console_out "/plugins"; }
 broadcast() { [ $# -ge 1 ] || die "usage: bambo broadcast <message>"; console "/say $*"; }
-tps() { console_out "/tps"; }
+tps() { console_out "status"; }
 
 # ---- world trash (undo for deleted worlds) ----
 world_trash_list() {
@@ -1314,6 +1340,7 @@ setup() {
   #                              a Bedrock update outruns PNX: pick the build whose
   #                              "Minecraft Version" matches your clients)
   local want="${1:-}" api="https://api.github.com/repos/PowerNukkitX/PowerNukkitX"
+  local -a prev_args=()
   command -v python3 >/dev/null || die "setup needs python3 to read the release API"
   lock_acquire
 
@@ -1360,8 +1387,13 @@ for r in json.load(sys.stdin): print('  ', r['tag_name'], r['published_at'][:10]
       lock_release
       die "sha256 mismatch (got ${got:0:16}..., want ${digest:0:16}...) - partial deleted, rerun to resume"
     fi
-    # preserve the previous jar for offline rollback
+    # preserve the previous jar AND its facts: the state_write below overwrites
+    # tag/sha256/protocol with the new jar, and without the old values recorded
+    # there is nothing for 'bambo rollback --prev' to restore the state from.
     if [ -f "$JAR" ]; then
+      prev_args=("prev_tag=$(state_get tag)" "prev_sha256=$(state_get sha256)"
+                 "prev_protocol=$(state_get protocol)" "prev_client_version=$(state_get client_version)"
+                 "prev_size=$(stat -c%s "$JAR" 2>/dev/null || echo 0)")
       mv -f "$JAR" "$JAR_PREV"
       echo "  previous jar kept as $(basename "$JAR_PREV")"
     fi
@@ -1372,11 +1404,127 @@ for r in json.load(sys.stdin): print('  ', r['tag_name'], r['published_at'][:10]
   # record the pinned deployment facts
   local proto client
   IFS='|' read -r proto client <<<"$(pnx_facts "$tag")"
-  state_write "tag=$tag" "sha256=$digest" "size=$size" "protocol=$proto" "client_version=$client" "installed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  state_write "tag=$tag" "sha256=$digest" "size=$size" "protocol=$proto" "client_version=$client" "installed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              ${prev_args[@]+"${prev_args[@]}"}
   echo "  recorded state: tag=$tag protocol=$proto client=$client"
   echo "next: ./bambo stop && ./bambo backup   (back up before swapping server versions)"
   echo "      ./bambo start"
   lock_release
+}
+
+# ---- version rollback: offline prev restore / choose a release (menu or direct) ----
+rollback_list() {
+  local cur prevtag
+  cur="$(state_get tag)"
+  echo "current      : PNX ${cur:-<none>}   ($( [ -f "$JAR" ] && du -sh "$JAR" | cut -f1 || echo 'no jar'))"
+  prevtag="$(state_get prev_tag)"
+  if [ -f "$JAR_PREV" ] && [ -n "$prevtag" ]; then
+    echo "previous     : PNX $prevtag (protocol $(state_get prev_protocol), client $(state_get prev_client_version)) - offline restore available"
+  elif [ -f "$JAR_PREV" ]; then
+    echo "previous     : jar present (facts not recorded) - offline restore available"
+  fi
+  echo
+  echo "known releases (download required):"
+  local t pf
+  for t in 3.0.6 3.0.5 3.0.4 3.0.3 3.0.2 3.0.0 3.0.1; do
+    pf="$(pnx_facts "$t")"
+    printf '  %-8s Bedrock %-9s protocol %s\n' "$t" "${pf#*|}" "${pf%|*}"
+  done
+}
+rollback_do() {
+  local target="${1:-}" want="" was_up=0
+  [ -n "$target" ] || die "usage: bambo rollback <version|--prev|--list>"
+  if [ "$target" = "--prev" ]; then
+    [ -f "$JAR_PREV" ] || die "no previous jar found (nothing to roll back to offline)"
+    want=prev
+  else
+    want="$(client_to_pnx "$target")"
+    [ -z "$want" ] && [[ "$target" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && want="$target"
+    [ -n "$want" ] || die "unknown version '$target' (see: bambo rollback --list)"
+  fi
+  [ "$want" != "prev" ] && [ "$want" = "$(state_get tag)" ] && { echo "already on PNX $want"; return 0; }
+
+  is_up && was_up=1
+  # backup/setup/start/stop report fatal errors with die(), which EXITS - so each is
+  # run in a subshell here; called directly, a failure would kill the process and
+  # leave the server stopped with these recovery branches never reached.
+  if [ "$was_up" = 1 ]; then echo "stopping server..."; ( stop ); fi
+  ( backup ) || { warn "backup failed - aborting rollback"; [ "$was_up" = 1 ] && ( start ); return 1; }
+
+  if [ "$want" = "prev" ]; then
+    local ptag psha pproto pclient psize ctag csha cproto cclient csize
+    ptag="$(state_get prev_tag)"; psha="$(state_get prev_sha256)"
+    pproto="$(state_get prev_protocol)"; pclient="$(state_get prev_client_version)"
+    psize="$(state_get prev_size)"
+    if [ -z "$ptag" ]; then
+      warn "the previous jar has no recorded version (installed before this was tracked) - pick a release: bambo rollback --list"
+      [ "$was_up" = 1 ] && ( start )
+      return 1
+    fi
+    ctag="$(state_get tag)"; csha="$(state_get sha256)"; cproto="$(state_get protocol)"
+    cclient="$(state_get client_version)"; csize="$(state_get size)"
+    lock_acquire
+    mv "$JAR" "$JAR.part" || { lock_release; warn "swap failed"; [ "$was_up" = 1 ] && ( start ); return 1; }
+    mv "$JAR_PREV" "$JAR" || { mv "$JAR.part" "$JAR"; lock_release; warn "swap failed"; [ "$was_up" = 1 ] && ( start ); return 1; }
+    if ! mv "$JAR.part" "$JAR_PREV"; then
+      lock_release
+      warn "running jar swapped, but the outgoing jar is left as $(basename "$JAR.part") - move it to $JAR_PREV by hand"
+    fi
+    # swap the facts the same way the jars swapped, so a second --prev comes back here
+    state_write "tag=$ptag" "sha256=$psha" "protocol=$pproto" "client_version=$pclient" "size=${psize:-0}" \
+                "prev_tag=$ctag" "prev_sha256=$csha" "prev_protocol=$cproto" \
+                "prev_client_version=$cclient" "prev_size=${csize:-0}" \
+      || warn "jar swapped but the state file could not be updated - check runtime/bambo.state.json"
+    echo "rolled back to the previous jar (PNX $ptag) - no download needed"
+  else
+    ( setup "$want" ) || { warn "setup failed - server left unchanged"; [ "$was_up" = 1 ] && ( start ); return 1; }
+  fi
+
+  notify rollback "server rolled back to PNX $(state_get tag)"
+  local cur; cur="$(state_get tag)"
+  case "$cur" in
+    3.0.3|3.0.4|3.0.5|3.0.6) ;;
+    *) echo "note: clients must match Bedrock $(state_get client_version) (protocol $(state_get protocol))" ;;
+  esac
+  if [ "$was_up" = 1 ]; then echo "restarting server..."; start; else echo "server is stopped - start with 'bambo start' when ready."; fi
+}
+rollback_menu() {
+  [ -t 0 ] || die "rollback menu needs an interactive terminal (use: bambo rollback --list / --prev / <version>)"
+  local options=() ans custom i=1 o sel
+  [ -f "$JAR_PREV" ] && options+=("prev:Previous installed jar (offline, no download) - PNX $(state_get prev_tag)")
+  options+=("3.0.6:PNX 3.0.6 (Bedrock 1.26.60, protocol 2225)")
+  options+=("3.0.5:PNX 3.0.5 (Bedrock 1.26.50, protocol 2193)")
+  options+=("3.0.4:PNX 3.0.4 (Bedrock 1.26.45, protocol 2169)")
+  options+=("3.0.3:PNX 3.0.3 (Bedrock 1.26.44, protocol 2168)")
+  echo
+  echo "Roll the server back to which version?"
+  for o in "${options[@]}"; do echo "  $i) ${o#*:}"; i=$((i+1)); done
+  echo "  $i) Another release or client version (e.g. 3.0.2 / 1.26.44)"
+  echo "  (Enter) Cancel"
+  printf 'Your choice [Enter=cancel]: '
+  read -r ans || true
+  [ -z "$ans" ] && { echo "cancelled"; return 0; }
+  if [[ "$ans" =~ ^[0-9]+$ ]]; then
+    if [ "$ans" -ge 1 ] && [ "$ans" -lt "$i" ]; then
+      sel="${options[$((ans-1))]}"
+      rollback_do "${sel%%:*}"
+      return 0
+    elif [ "$ans" = "$i" ]; then
+      printf 'Tag or client version (e.g. 3.0.2 / 1.26.44): '
+      read -r custom || true
+      [ -n "$custom" ] && rollback_do "$custom"
+      return 0
+    fi
+  fi
+  echo "invalid choice - cancelled"
+}
+rollback() {
+  case "${1:-menu}" in
+    menu|--menu) rollback_menu ;;
+    list|--list) rollback_list ;;
+    prev|--prev) rollback_do --prev ;;
+    *) rollback_do "$1" ;;
+  esac
 }
 version() {
   echo "bambo-mc v$BAMBO_VERSION"
@@ -1514,6 +1662,10 @@ bambo (alias: bambo-mc) v$BAMBO_VERSION - control the Bedrock server + admin das
   bambo restore list|<ts>   roll worlds back to a snapshot
   bambo setup [version]     download/verify the server jar (pins the deployed version)
   bambo setup --ask           ask: match installed client version, or install latest
+  bambo rollback [version|--prev|--list]
+                            undo a version change: --prev swaps back to the jar kept
+                            on disk (offline, no download); a version re-installs it;
+                            no argument opens the version menu
   bambo bootstrap [--start] [--dry-run] [--ask]   automatic fresh-machine setup:
                           deps + jar + wrappers + nightly cron + token (+ server)
 
@@ -1618,9 +1770,22 @@ COMMANDS
     setup [version]      fetch the server jar from GitHub, resuming interrupted
                          downloads and verifying the published sha256; records the
                          deployment state. The previous jar is kept as
-                         powernukkitx.jar.prev for offline rollback.
+                         powernukkitx.jar.prev, with its tag/sha256/protocol/client
+                         recorded as prev_* in the state, for offline rollback.
                          --ask prompts to install the release matching a detected
                          local client version, or the latest stable.
+    rollback [target]    undo a version change (backs up first, swaps the jar, then
+                         restarts only if the server was running).
+                         --prev     put powernukkitx.jar.prev back in place and swap
+                                    the prev_* state keys with it - offline, no
+                                    download, and repeatable (a second --prev
+                                    returns to the version you left).
+                         <version>  re-install a PNX tag or a Bedrock client
+                                    version (resolved through the same table setup
+                                    uses); needs the network.
+                         --list     show the current jar, what --prev would give
+                                    back, and the known releases.
+                         no argument opens an interactive menu.
     bootstrap [--start] [--dry-run]
                          ONE-COMMAND fresh-machine setup: ensures system deps
                          (apt/dnf/zypper/pacman), the server jar, wrappers, the
@@ -1636,8 +1801,8 @@ FILES
     logs/                cron/dashboard/watchdog/audit logs
 
 SECURITY
-    The dashboard binds 127.0.0.1 by default. 'bambo --host 0.0.0.0' (via dash env
-    BAMBO_DASH_HOST) exposes 'cmd' to the whole network behind one token - only do
+    The dashboard binds 127.0.0.1 by default. 'BAMBO_DASH_HOST=0.0.0.0 bambo dash
+    start' exposes 'cmd' to the whole network behind one token - only do
     this on a trusted LAN. Failed auth attempts are rate-limited per IP; every action
     is written to logs/dash-audit.log.
 
@@ -1696,6 +1861,7 @@ main() {
         config)   config "$@" ;;
         bootstrap) bootstrap "$@" ;;
         setup)    case "${1:-}" in --ask) setup_choose ;; --menu) setup_menu ;; *) setup "${1:-}" ;; esac ;;
+        rollback) rollback "${1:-}" ;;
         backup)   backup "${1:-}" ;;
         restore)  restore "${1:-list}" ;;
         *)        die "unknown option '$a' - try: bambo --help" ;;

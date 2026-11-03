@@ -40,7 +40,16 @@ locate_repo() {
   return 1
 }
 
-usage(){ sed -n '2,20p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'; }
+usage(){
+  # Piped through 'curl | bash' $0 is the shell, not this file - then the header
+  # cannot be read back, so fall back to a short option list instead of printing
+  # nothing (and never show a truncated range: the header is 22 lines long).
+  if [ -f "$0" ] && head -1 "$0" 2>/dev/null | grep -qE '^#!.*sh'; then
+    sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
+  else
+    printf 'bambo-mc installer. Options:\n  (default) full setup: deps, jar, nightly cron, token, config, dashboard\n  --system            /opt + /usr/local/bin (needs root)\n  --prefix=DIR        command dir to install into\n  --jar               force (re)download the server jar\n  --no-launch         install, but do not open the dashboard\n  --ask               prompt for the server version (default when interactive)\n  --no-ask            never prompt\n  --start             also start the game server\n  --dry-run           preview everything; changes nothing\n  --check             analyse the machine; install nothing\n  --uninstall         remove the wrappers this installer created\n  Full text: ./install.sh --help from inside the repo, or README.md\n'
+  fi
+}
 
 # ---- --auto helpers: make the machine ready end-to-end ----
 fetch_repo() {
@@ -160,6 +169,7 @@ for a in "$@"; do
     --start)    START=1 ;;
     --dry-run)  DRYRUN=1 ;;
 --ask)      : ;; # accepted for compatibility (asking is the default)
+    --no-ask)   ASKOFF=1 ;;
     --version)  echo "bambo-mc installer"; exit 0 ;;
     --system)   SYSTEM=1 ;;
     --uninstall) UNINSTALL=1 ;;
@@ -188,11 +198,16 @@ esac; }
 
 uninstall(){
   REPO="$(locate_repo 2>/dev/null || true)"
+  if [ -z "$REPO" ]; then
+    printf '  cannot tell which install this is - run --uninstall from inside the repo,\n  or set BAMBO_REPO=/path/to/bambo-mc (refusing to delete wrappers we cannot attribute)\n' >&2
+    return 1
+  fi
   local removed=0
   for c in "${CMDS[@]}"; do f="$BIN/$c"
-    if [ -f "$f" ] && { [ -z "$REPO" ] || grep -q "$REPO" "$f" 2>/dev/null; }; then rm -f "$f"; echo "  removed $f"; removed=1; fi
+    # -F: the app path is data, not a regex; a path with . or + would mis-match otherwise
+    if [ -f "$f" ] && grep -qF -- "$REPO" "$f" 2>/dev/null; then rm -f "$f"; echo "  removed $f"; removed=1; fi
   done
-  [ "$removed" = 1 ] || echo "  nothing to remove in $BIN"
+  [ "$removed" = 1 ] || echo "  no wrappers for $REPO in $BIN"
 }
 
 banner_done(){
@@ -207,13 +222,14 @@ banner_done(){
       printf '    \033[1mdashboard is up\033[0m at  \033[4mhttp://127.0.0.1:%s\033[0m\n' "${BAMBO_DASH_PORT:-8787}"
       printf '    token: %s\n' "${t:-<open the dashboard; it self-generates at $tok>}"
     else
-      printf '    \033[33mdashboard did not start\033[0m - retry with: bambo --dash  (log: /tmp/bambo-install-dash.log)\n'
+      printf '    \033[33mdashboard did not start\033[0m - retry with: bambo --dash  (log: %s/install-dash.log)\n' \
+        "${INSTALL_LOG_DIR:-$REPO/logs}"
     fi
   fi
   printf '\n'
 }
 
-if [ "$UNINSTALL" = 1 ]; then echo "bambo-mc uninstaller"; uninstall; exit 0; fi
+if [ "$UNINSTALL" = 1 ]; then echo "bambo-mc uninstaller"; uninstall || exit 1; exit 0; fi
 REPO="$(locate_repo)"
 if [ -z "$REPO" ] || [ ! -x "$REPO/bambo" ]; then
   REPO="$(fetch_repo)" || exit 1
@@ -249,14 +265,22 @@ ensure_deps || exit 2
 ensure_cron
 ensure_token
 if [ ! -f "$REPO/bambo.conf" ]; then
-  cp "$REPO/config.example" "$REPO/bambo.conf" 2>/dev/null && chmod 600 "$REPO/bambo.conf" || true
-  [ -f "$REPO/bambo.conf" ] && printf '  config: created bambo.conf (edit it, then: bambo config apply)\n'
+  if [ "$DRYRUN" = 1 ]; then
+    printf '  config: (dry-run) would create bambo.conf from config.example\n'
+  else
+    cp "$REPO/config.example" "$REPO/bambo.conf" 2>/dev/null && chmod 600 "$REPO/bambo.conf" || true
+    [ -f "$REPO/bambo.conf" ] && printf '  config: created bambo.conf (edit it, then: bambo config apply)\n'
+  fi
 fi
 # --dry-run: stop before anything mutates the system
 if [ "$DRYRUN" = 1 ]; then
   printf '\n  (dry-run) stopping before any changes - nothing was installed or modified\n'
   exit 0
 fi
+# install logs: repo-local, not /tmp - a predictable /tmp name written by a
+# root-run installer (sudo ./install.sh --system) is a symlink trap.
+INSTALL_LOG_DIR="$REPO/logs"
+mkdir -p "$INSTALL_LOG_DIR" 2>/dev/null || INSTALL_LOG_DIR="${TMPDIR:-/tmp}"
 # ensure the server jar (the one large resource) - download+verify only if absent
 EASK=""
 if [ "${ASKOFF:-0}" != 1 ] && [ -t 1 ]; then
@@ -266,9 +290,9 @@ else
 fi
 if [ ! -f "$REPO/runtime/powernukkitx.jar" ] || [ "$FORCEJAR" = 1 ]; then
   spin "downloading and verifying the server (this can take a while)"
-  "$REPO/bambo" --setup${EASK:+ --menu} >/tmp/bambo-install-jar.log 2>&1; jar_rc=$?
+  "$REPO/bambo" --setup${EASK:+ --menu} >"$INSTALL_LOG_DIR/install-jar.log" 2>&1; jar_rc=$?
   spindown
-  [ $jar_rc -eq 0 ] || printf '  \033[33m!\033[0m jar setup had issues (see /tmp/bambo-install-jar.log)\n'
+  [ $jar_rc -eq 0 ] || printf '  \033[33m!\033[0m jar setup had issues (see logs/install-jar.log in the app folder)\n'
 else
   spin "server already present, skipping download"; sleep 0.4; spindown
 fi
@@ -289,7 +313,7 @@ fi
 # launch ONLY the dashboard (never the game server)
 if [ "$LAUNCH" = 1 ] && command -v python3 >/dev/null 2>&1; then
   spin "starting the dashboard"
-  "$REPO/bambo" --dash start >/tmp/bambo-install-dash.log 2>&1
+  "$REPO/bambo" --dash start >"$INSTALL_LOG_DIR/install-dash.log" 2>&1
   sleep 0.5; spindown
 elif [ "$LAUNCH" = 1 ]; then
   printf '  \033[33m!\033[0m python3 missing - dashboard not started\n'
