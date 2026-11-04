@@ -66,7 +66,7 @@ After install, `bambo` (and `bambo-mc`, `bambo-dash`, `bambo-nettest`) are globa
 | Config | one friendly file `bambo.conf` + interactive wizard + validated apply |
 | Backups | nightly automatic snapshots (worlds+players+config+manifest), retention, restore |
 | Updates | `bambo update check/apply [--ask]` — upstream-aware, safe upgrade path |
-| Dashboard | web UI at http://127.0.0.1:8787 (token-gated, audited, rate-limited) |
+| Dashboard | ops console at http://127.0.0.1:8787 - live status, alerts, heartbeat of who is in, filterable server log, players/worlds/backups, confirm-gated destructive actions (token-gated, audited, rate-limited) |
 | Monitoring | `bambo health --json`, doctor, optional watchdog auto-restart, webhook alerts |
 | Install | one-command bootstrap with interactive version & config prompts |
 | Ops | scheduled daily restart, audit log, systemd templates, CI, tests |

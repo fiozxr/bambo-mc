@@ -64,6 +64,45 @@ PY
 [ $? = 0 ] && ok "log tail strips colour codes without eating letters" \
            || fail "log tail mangles the server log"
 
+# ---- the derived facts the console is built on ----
+out="$(curl -s http://127.0.0.1:$PORT/api/status)"
+for key in '"config"' '"version"' '"health"' '"alerts"' '"history"' '"join_ip"' '"port"' '"players"'; do
+  check_contains "$out" "$key" "status exposes $key"
+done
+out="$(curl -s "http://127.0.0.1:$PORT/api/log?limit=60")"
+check_contains "$out" '"entries"' "log endpoint returns entries"
+echo "$out" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+sys.exit(0 if all({"ts","level","tag","msg"} <= set(e) for e in d["entries"]) else 1)' \
+  && ok "every log entry carries ts/level/tag/msg" || fail "log entry shape inconsistent"
+
+# ---- page contract: ids the script reaches for exist, and no server data is ever
+#      assigned through innerHTML (SECURITY.md promises textContent rendering) ----
+python3 - "$ROOT/bin/bambo-dash.py" <<'PY'
+import re, sys
+src = open(sys.argv[1], encoding="utf-8").read()
+page = src[src.index('PAGE_CSS_HTML = """'):src.index('PAGE = PAGE_CSS_HTML')]
+markup, script = page.split('PAGE_JS = """')
+ids = set(re.findall(r'id="?([A-Za-z][\w-]*)', markup))
+refs = set(re.findall(r'\$\("#([\w-]+)"\)', script)) | set(re.findall(r'querySelector\("#([\w-]+)"\)', script))
+missing = sorted(r for r in refs if r not in ids)
+if missing:
+    print("  JS reaches for ids missing from the markup: %s" % ",".join(missing)); sys.exit(1)
+bad = [v.strip() for v in re.findall(r'\.innerHTML\s*=\s*([^;\n]+)', script)
+       if v.strip() not in ('""', "''")]
+if bad:
+    print("  innerHTML assigned real content: %s" % bad); sys.exit(1)
+if "textContent" not in script:
+    print("  page no longer renders through textContent"); sys.exit(1)
+unwired = sorted(i for i in ids if i.endswith("Btn")
+                 and '"#%s"' % i not in script and "#%s" % i not in script)
+if unwired:
+    print("  buttons with no handler anywhere: %s" % ",".join(unwired)); sys.exit(1)
+print("  page contract ok: %d ids, %d referenced, innerHTML only ever clears" % (len(ids), len(refs)))
+PY
+[ $? = 0 ] && ok "page markup matches its script" || fail "page contract broken"
+
 # bad token -> 401
 code="$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:$PORT/api/action \
   -H 'content-type: application/json' -d '{"token":"wrong","action":"start"}')"

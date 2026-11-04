@@ -2,6 +2,77 @@
 
 All notable changes to bambo-mc are documented here (project-initiated work, not upstream PNX).
 
+## [2.6.0] — 2026-11-04 — Dashboard rebuilt as an operations console
+
+The web dashboard was a wall of rounded glass cards with gradient washes and ALL-CAPS
+labels - a generic look that also hid the two things an operator actually checks. It is
+rebuilt as a dense NOC-style console, following current dashboard practice for
+monitoring UIs (status clarity first, colour reserved for genuine anomalies, tabular
+figures so live values cannot jitter, progressive disclosure instead of one flat page).
+
+### Added — what the page now answers
+- **Status strip above the fold**: running / up-but-unreachable / stopped as a word plus a
+  dot (never colour alone), uptime, players online vs max, last activity, engine build.
+- **Join card**: the address on its own with a Copy button, the port, whether it is
+  listening, and whether the dashboard is bound to localhost or the network.
+- **Heartbeat**: an inline-SVG sparkline of players online over the last few minutes, with
+  the spans where the server was down shaded. No chart library, no canvas, no deps.
+- **Alerts**: derived, not decorative - up but nothing listening, backups older than 36h,
+  no snapshots, errors in the log window, engine version unrecorded, and open
+  authentication combined with an exposed dashboard bind.
+- **Log viewer**: entries parsed into time/level/message, level chips (info/warn/error/
+  debug), text filter, Follow toggle that stops the view jumping and reports how many
+  lines arrived while paused.
+- **Tables where there were text blobs**: worlds (size, default, Make default), backups
+  (age, newest first, Restore), operators/allow list, players.
+- **Left rail navigation** that tracks the section in view, and a live/offline indicator
+  so a dead dashboard says so instead of freezing on stale values.
+- Light and dark themes: follows `prefers-color-scheme`, with a remembered toggle.
+- Destructive controls (Stop, Restart, Back up, Save name, world delete, restore,
+  engine rollback) arm on the first press and act on the second, with the consequence in
+  the confirmation line; an in-flight command says so rather than silently no-oping.
+- Polling pauses while the tab is hidden and backs off when the dashboard stops
+  answering, which matters on a phone hotspot.
+
+### Added — API
+- `GET /api/log?limit=N` returns structured entries (`ts`, `level`, `tag`, `msg`), so the
+  log has its own cadence instead of riding the status poll.
+- `/api/status` gained `config` (from `runtime/pnx.yml`), `version` (from
+  `runtime/bambo.state.json`), `health` (boot time, uptime, players online, last activity,
+  error/warning counts), `alerts`, `history`, `port`, `join_ip` and `exposed` - all derived
+  from file reads, with no extra subprocess per poll. `players` is now a real count, or
+  `null` when the log window cannot prove it, rather than always `null`.
+- Actions the console can now reach: `restore`, `rollback`, `update`, `maintenance`.
+  Destructive log parsing is honest: a player count is only shown when the boot marker is
+  inside the window that was read.
+
+### Fixed during the rebuild (found by driving the real page in a headless DOM)
+- `stop`/`restart`/`backup`/world delete/name save fired on a single click: the arm flag
+  was set by a listener on the button and checked by a delegated document listener in the
+  same click, so the guard could never work. Confirmation moved into the document
+  listener, which always runs after the button's own.
+- A string was passed where a DOM node was expected (`op list` result panel), which threw
+  on click.
+- Two different `world` actions shared a busy-lock keyed on the action name, so a queued
+  `world create` silently swallowed `world delete`; the lock is per control now and
+  reports when something is already running.
+- The engine-rollback control bypassed its own confirmation entirely.
+- A nested ternary in the version card did not parse - the whole page script failed to
+  load, which a syntax check now catches before it ships.
+
+### Tests
+- `dash_smoke` grew a page contract check: every `#id` the script reaches for must exist in
+  the markup, `innerHTML` may only ever be assigned an empty string (the SECURITY.md
+  promise that server text never becomes markup), every `*Btn` must have a handler, plus
+  assertions for the new status fields and the `/api/log` entry shape. 28 checks.
+- Version is read from `BAMBO_VERSION` rather than hard-coded, so this bump needed no test
+  edits.
+
+Not verified: visual rendering in a real browser. No Chromium is available on the
+development machine, so the page was driven through a headless DOM instead - it proves
+behaviour and wiring, not pixels.
+
+
 ## [2.5.6] — 2026-11-03 — Bug-fix pass: dashboard, console output, rollback
 
 ### Fixed — dashboard (`bin/bambo-dash.py`)

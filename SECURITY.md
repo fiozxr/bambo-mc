@@ -25,7 +25,8 @@ never expose it to the internet without a review of everything below.
 | Dashboard auth | constant-time HMAC compare (`hmac.compare_digest`) |
 | Dashboard abuse | per-IP rate limiting for failed auth attempts; request size cap |
 | Dashboard transport | binds localhost by default; no TLS (planned for remote use) |
-| Dashboard output | CSP + `X-Content-Type-Options` + `X-Frame-Options` headers; logs are rendered via `textContent` (no HTML injection) |
+| Dashboard output | CSP + `X-Content-Type-Options` + `X-Frame-Options` headers; server text (logs, player names, command output) reaches the page only through `textContent`/`createElement`, never `innerHTML` - a test asserts no non-empty `innerHTML` assignment exists in the page script |
+| Dashboard actions | destructive controls (stop, restart, name save, world delete, backup restore, engine rollback) need a second confirming press; every `POST /api/action` remains token-gated |
 | Dashboard audit | every action is logged to `logs/dash-audit.log` (timestamp, IP, action, result) |
 | Game server | `enableMetrics: false` (no bStats upstream); rate-limiting enabled in `pnx.yml` |
 | Backups | snapshots are sha256/integrity-checked; restore keeps the pre-restore state |
