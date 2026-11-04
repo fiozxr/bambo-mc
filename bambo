@@ -18,7 +18,7 @@ set -uo pipefail
 # - SC2015: helpers ok()/bad()/info() always exit 0 (they only print), so "A && B || C" is safe.
 # - SC2012: ls is used deliberately on directories this project owns (backups/worlds).
 
-BAMBO_VERSION="2.8.0"
+BAMBO_VERSION="2.8.1"
 
 # cron's default PATH is /usr/bin:/bin, which omits /usr/sbin - where `ip` lives.
 # Without this, lan_ip()/join() silently return nothing when run from a cron job.
@@ -1610,9 +1610,15 @@ uninstall() {
     local now; now="$(date +%Y%m%d-%H%M%S)"
     if "$CRONTAB_BIN" -l > "$ROOT/backups/crontab.backup.pre-uninstall-$now" 2>/dev/null; then
       if grep -qE 'bambo (backup|restart)|/bambo-mc/' "$ROOT/backups/crontab.backup.pre-uninstall-$now" 2>/dev/null; then
-        grep -vE 'bambo (backup|restart)|/bambo-mc/' "$ROOT/backups/crontab.backup.pre-uninstall-$now" | "$CRONTAB_BIN" - \
-          && echo "  crontab: nightly backup and daily restart removed (previous crontab: backups/crontab.backup.pre-uninstall-$now)" \
-          || echo "  crontab: could not be rewritten - edit it yourself (backup: backups/crontab.backup.pre-uninstall-$now)" >&2
+        # Capture first: with pipefail set, a grep -v that legitimately deletes the
+        # LAST line exits 1, so piping it straight into crontab made a successful
+        # rewrite look like a failure and told the user to edit cron by hand.
+        local left; left="$(grep -vE 'bambo (backup|restart)|/bambo-mc/' "$ROOT/backups/crontab.backup.pre-uninstall-$now" 2>/dev/null || true)"
+        if printf '%s\n' "$left" | "$CRONTAB_BIN" - 2>/dev/null; then
+          echo "  crontab: nightly backup and daily restart removed (previous crontab: backups/crontab.backup.pre-uninstall-$now)"
+        else
+          echo "  crontab: could not be rewritten - edit it yourself (backup: backups/crontab.backup.pre-uninstall-$now)" >&2
+        fi
       else
         echo "  crontab: no bambo entries found, left untouched"
         rm -f "$ROOT/backups/crontab.backup.pre-uninstall-$now"

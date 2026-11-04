@@ -365,6 +365,26 @@ out="$(run_uninstall --yes --purge 2>&1)"
 [ -f "$UA/bambo" ] && ok "the app folder and its git history are never deleted" \
                     || fail "--purge deleted the app folder itself"
 
+# the false-alarm case: when the ONLY crontab line is ours, grep -v exits 1 under
+# pipefail and a successful rewrite used to be reported as a failure
+UT2="$(mktemp -d)"; mkdir -p "$UT2/app/runtime" "$UT2/app/logs" "$UT2/app/backups" "$UT2/bin" "$UT2/app/server"
+cp "$ROOT/bambo" "$UT2/app/bambo"; chmod +x "$UT2/app/bambo"; cp "$ROOT/install.sh" "$UT2/app/install.sh"
+cp "$ROOT/config.example" "$UT2/app/config.example" 2>/dev/null || true
+printf '30 3 * * * cd %s && ./bambo stop && ./bambo backup && ./bambo start\n' "$UT2/app" > "$UT2/ct"
+cat > "$UT2/fc" <<'CT2'
+#!/usr/bin/env bash
+if [ "${1:-}" = "-l" ]; then cat "$UT_CRONTAB" 2>/dev/null; exit 0; fi
+cat > "$UT_CRONTAB"
+CT2
+chmod +x "$UT2/fc"
+out="$(BAMBO_ROOT="$UT2/app" BAMBO_SESSION="bambo-lone-$$" BAMBO_DASH_SESSION="bambo-loned-$$" \
+        BAMBO_CRONTAB_BIN="$UT2/fc" UT_CRONTAB="$UT2/ct" "$ROOT/bambo" uninstall --yes --prefix="$UT2/bin" 2>&1)"
+check_contains "$out" "nightly backup and daily restart removed" "sole crontab line is removed without a false error"
+case "$out" in *"could not be rewritten"*) fail "a successful crontab rewrite was reported as failure" ;; *) ok "no false crontab failure" ;; esac
+[ -z "$(tr -d '[:space:]' < "$UT2/ct")" ] && ok "the crontab is left empty rather than half-edited" \
+                                         || fail "leftover crontab content: $(cat "$UT2/ct")"
+rm -rf "$UT2"
+
 # --purge must refuse a directory that is not a bambo-mc root
 NB="$(mktemp -d)"; mkdir -p "$NB/runtime" "$NB/bin"; echo precious > "$NB/runtime/precious"
 out="$(BAMBO_ROOT="$NB" BAMBO_SESSION="bambo-nb-$$" BAMBO_DASH_SESSION="bambo-nbd-$$" \

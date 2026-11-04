@@ -2,6 +2,21 @@
 
 All notable changes to bambo-mc are documented here (project-initiated work, not upstream PNX).
 
+## [2.8.1] — 2026-11-04 — Uninstall no longer cries failure on success
+
+- `bambo uninstall` reported "crontab: could not be rewritten - edit it yourself" on the
+  one machine it was actually run against, while having rewritten it correctly. With
+  `pipefail` set, a `grep -v` that legitimately deletes the final line exits 1, and that
+  status was being read as the crontab write's own failure. The remaining lines are now
+  captured first and only `crontab`'s status decides the message. Caught by running the
+  tool for real rather than only against a stubbed crontab; a test now covers the
+  sole-bambo-line case, asserts no false error, and asserts the crontab ends up empty
+  rather than half-edited. Verified end to end: the crontab the tool saved under
+  `backups/` restored cleanly, a second run changed nothing, all 48 other commands in
+  `~/.local/bin` were left alone, and the worlds, config and token survived.
+- 85 CLI + 28 dashboard checks.
+
+
 ## [2.8.0] — 2026-11-04 — `bambo uninstall`, and any release can be installed
 
 ### Added
