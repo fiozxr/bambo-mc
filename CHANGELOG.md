@@ -2,6 +2,17 @@
 
 All notable changes to bambo-mc are documented here (project-initiated work, not upstream PNX).
 
+## [2.8.2] — 2026-11-04 — Backup list updates the moment a backup exists
+
+- The v2.6.0 status caching memoized the backup list for 30s to help a 2.1s endpoint.
+  That saving was never needed - the list is a single `listdir` - and it backfired
+  exactly where it mattered: after a `bambo backup` on the command line the dashboard kept
+  showing "No backups yet" for up to half a minute, which reads as though the backup
+  failed. The list is read live now; `join` and the sibling-server scan stay cached,
+  since those are the subprocess-backed ones. Found by taking the first backup on a fresh
+  install and watching the panel disagree with reality.
+
+
 ## [2.8.1] — 2026-11-04 — Uninstall no longer cries failure on success
 
 - `bambo uninstall` reported "crontab: could not be rewritten - edit it yourself" on the

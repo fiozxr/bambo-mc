@@ -29,7 +29,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-TOOL_VERSION = "2.8.1"
+TOOL_VERSION = "2.8.2"
 MAX_BODY = 64 * 1024          # request body cap (bytes)
 MAX_ARGS = 8                  # max args in one admin action
 MAX_ARG_LEN = 256             # max length of a single arg
@@ -452,7 +452,11 @@ def status():
     bound = port_bound()
     cfg = cached("config", 30.0, server_config)
     st = cached("state", 60.0, state_facts)
-    backups_list = cached("backups", 30.0, backups)
+    # Not memoized: it is a cheap listdir, and the backup list is exactly what has
+    # changed when someone looks at it - a CLI-side `bambo backup` used to stay
+    # invisible here for up to 30s, leaving "No backups yet" on screen after a
+    # snapshot had already succeeded.
+    backups_list = backups()
     health = session_facts(parse_log(log_tail(400)), running_now)
     port = int(cfg.get("port") or PORT)
     sample_history(health["players_online"], running_now)
