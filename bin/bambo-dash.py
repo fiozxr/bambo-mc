@@ -29,7 +29,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-TOOL_VERSION = "2.6.0"
+TOOL_VERSION = "2.7.0"
 MAX_BODY = 64 * 1024          # request body cap (bytes)
 MAX_ARGS = 8                  # max args in one admin action
 MAX_ARG_LEN = 256             # max length of a single arg
@@ -364,6 +364,29 @@ def state_facts():
                                   "prev_tag", "prev_client_version")}
 
 
+# Releases this project knows how to install, with the Bedrock protocol each one
+# serves. Mirrors pnx_facts() in the ./bambo CLI - tests/cli_basics.sh asserts the two
+# tables list identical tag/protocol/client triples, so they cannot drift apart.
+RELEASES = [
+    ("3.0.6", "2225", "1.26.60"),
+    ("3.0.5", "2193", "1.26.50"),
+    ("3.0.4", "2169", "1.26.45"),
+    ("3.0.3", "2168", "1.26.44"),
+    ("3.0.2", "2168", None),
+    ("3.0.1", "1001", None),
+    ("3.0.0", "1001", None),
+]
+
+def releases(current, prev):
+    """The version picker's data: what can be installed, and where each one sits."""
+    out = []
+    for tag, protocol, client in RELEASES:
+        out.append({"tag": tag, "protocol": protocol, "client_version": client,
+                    "current": tag == current, "is_previous": tag == prev,
+                    "needs_download": tag != current})
+    return out
+
+
 def alerts(health, cfg, st, running, bound, host, backup_list, port):
     """What is wrong, in the order an operator should read it."""
     out = []
@@ -447,6 +470,7 @@ def status():
         "players": health["players_online"],
         "exposed": LISTEN_HOST if LISTEN_HOST != "127.0.0.1" else None,
         "history": history(),
+        "releases": releases(st.get("tag"), st.get("prev_tag")),
         "alerts": alerts(health, cfg, st, running_now, bound, LISTEN_HOST, backups_list, port),
     }
 
@@ -847,6 +871,13 @@ details[open] summary{color:var(--txt)}
               <button id=updateCheck type=button>Check for updates</button>
               <button id=prevBtn type=button data-confirm="Swap back to the previously installed engine? The server stops for a moment.">Back to previous build</button>
             </div>
+            <div class="row" style=padding:0 12px 12px>
+              <label for=verPick style=font-size:12px;color:var(--dim)>Switch engine</label>
+              <select id=verPick class=grow aria-label="Server version to switch to"></select>
+              <button id=verGo class=danger type=button
+                data-confirm="Install this engine build? Takes a backup, stops the server, downloads the jar, then restarts if it was running. Clients must match the Bedrock version it speaks.">Switch</button>
+            </div>
+            <div class="dbo faint" style=font-size:12px id=verHint></div>
             <div class="res hidden" id=verRes></div>
           </div>
         </section>
@@ -1401,6 +1432,14 @@ function wireActions(){
   $("#opList").addEventListener("click",()=>run($("#opList"),"op",["list"],"Operators",$("#aRes")));
   $("#worldRefresh").addEventListener("click",refreshWorlds);
   $("#updateCheck").addEventListener("click",()=>run($("#updateCheck"),"update",["check"],"Update check",$("#verRes")));
+  // Any button with its own listener must check armed() too: the document-level
+  // arming runs after this handler, so without the guard one tap would act.
+  $("#verGo").addEventListener("click",(e)=>{
+    if(!armed(e.currentTarget))return;         // switching engines stops the server and downloads a build
+    const sel=$("#verPick"), tag=(sel&&sel.value)||"";
+    if(!tag){toast("Choose a version first","","err");return;}
+    run(e.currentTarget,"rollback",[tag],"Switched the engine to PNX "+tag,$("#verRes")).then(()=>tick(true));
+  });
   $("#prevBtn").addEventListener("click",(e)=>{
     const b=e.currentTarget;
     if(!armed(b))return;                       // swapping the engine stops the server
@@ -1443,6 +1482,30 @@ function renderVersion(s){
   .forEach(([k,val])=>{kv.appendChild(el("dt",null,k));kv.appendChild(el("dd",null,val));});
   const p=$("#prevBtn");
   if(p)p.disabled=!v.prev_tag;
+
+  const sel=$("#verPick");
+  if(sel && s.releases){
+    const have=sel.value;
+    sel.innerHTML="";
+    s.releases.forEach(r=>{
+      const o=document.createElement("option");
+      o.value=r.tag;
+      o.textContent="PNX "+r.tag+"  \u00b7  serves Bedrock "+(r.client_version||"unknown")
+        +"  \u00b7  protocol "+r.protocol
+        +(r.current?"  \u2190 installed":(r.is_previous?"  \u2190 previous build":""));
+      o.disabled=r.current;
+      sel.appendChild(o);
+    });
+    if(have && s.releases.some(r=>r.tag===have && !r.current))sel.value=have;
+    const hint=$("#verHint");
+    if(hint){
+      const cur=s.releases.filter(r=>r.current)[0];
+      hint.textContent=cur
+        ?("Currently PNX "+cur.tag+", which speaks Bedrock "+(cur.client_version||"an unknown version")+
+          ". Players whose client is a different Bedrock release cannot join it.")
+        :"This build is not one of the pinned releases; the list still lets you switch back.";
+    }
+  }
 }
 
 /* ---------- boot ---------- */

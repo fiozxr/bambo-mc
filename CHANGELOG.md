@@ -2,6 +2,77 @@
 
 All notable changes to bambo-mc are documented here (project-initiated work, not upstream PNX).
 
+## [2.7.0] — 2026-11-04 — Piped-install prompts fixed, version picker in the dashboard
+
+### Fixed — the one-command install could not finish
+- **Interactive menus refused to run under `curl -fsSL .../install.sh | bash`.** They
+  gated on `[ -t 0 ]`, but a piped installer has the script itself on stdin while the
+  user still has a keyboard on the controlling terminal. The version menu therefore died
+  with "needs an interactive terminal", the jar was never downloaded, and the installer
+  still printed "installed" - leaving a dashboard whose Start button could only answer
+  `missing powernukkitx.jar`. Menus now re-attach stdin to `/dev/tty` and still refuse
+  with guidance when there is genuinely no terminal (cron, CI). Applies to
+  `setup --ask`, `setup --menu`, `update --ask`, `config wizard` and `rollback`.
+- **`bambo config wizard` never read a single answer.** Its Python was fed with
+  `python3 - <<HEREDOC`, which consumes stdin as the program and leaves an empty stream
+  for the prompts, so every question silently took its default - a fresh install was
+  configured by accident, not by the operator. The program now runs from a temp file.
+- **The installer hid the version prompt in a log file** and reported success with no
+  server installed. The prompt is now shown (tee'd to the log), the jar is verified
+  afterwards, and a missing server prints the exact fix command and exits non-zero
+  instead of claiming readiness.
+- `use_terminal_stdin` leaked `/dev/tty: No such device or address` to the user because
+  bash opens the redirect before applying a trailing `2>/dev/null` on the same command;
+  the suppression is now scoped to a group.
+
+### Added — choose any supported server version from the dashboard
+- The Software panel has a version picker: every pinned PowerNukkitX release with the
+  Bedrock version and protocol it speaks, the installed one marked and disabled, and a
+  plain-language note that players on a different Bedrock release cannot join a mismatch.
+  Switching is confirm-gated and routes through the existing `bambo rollback <version>`,
+  which backs up, stops the server, downloads the pinned sha256-verified jar, and
+  restarts only if the server was running.
+- `/api/status` gained `releases`, and a test compares that table against the CLI's
+  `pnx_facts` so the two lists cannot drift apart.
+
+### Fixed — during the build
+- The new Switch button carried its own click listener and so skipped the confirmation
+  entirely - the same defect class as `motdGo` and `prevBtn` before it; a single tap
+  would have stopped the server and pulled a 90MB download.
+
+### Fixed — rollback could stop the game for a build that does not exist
+- `bambo rollback 99.99.99` accepted any version-shaped string, so it stopped the running
+  server, took a backup, and only then failed the download - and its recovery restart ran
+  against the caller's root, which left the server down. The target is now checked against
+  the pinned release table before anything is touched; arbitrary tags still go through
+  `bambo setup <tag>`. Found because a test of mine stopped the live server.
+- `rollback --list` printed 3.0.0 before 3.0.1.
+
+### Fixed — a freshly wiped install could not start at all
+- With no `runtime/pnx.yml`, PowerNukkitX runs **its own** first-time setup wizard on the
+  console and waits for a language answer. Nothing can reply through `bambo start`, so
+  the server sat at `Language code [eng]:` and then exited without ever binding the port.
+  `start` now seeds `runtime/pnx.yml` from the tracked `server/pnx.yml` (which pins
+  `language: eng`) before the first boot; `bambo config apply` still governs it after.
+- The `rollback --list` release order printed 3.0.0 before 3.0.1.
+
+### Fixed — the "non-live" test suite was reading your live server
+- `SESSION`/`SESSION_DASH` were hard-coded to `bambo-mc`/`bambo-dash`, so `bambo status`
+  inside a fixture reported the real session: the suite passed only while the server
+  happened to be stopped, and would have failed for anyone running it after the nightly
+  backup job had restarted the server. Both names are now overridable
+  (`BAMBO_SESSION`, `BAMBO_DASH_SESSION`) and the suite sets its own, so it can neither
+  observe nor stop a live server. Verified by running the whole suite with the server up.
+- The earlier "skip when a live session exists" workaround is gone: the rollback swap
+  tests now run unconditionally (9 checks that had been silently skipped).
+
+### Tests
+- pty-dependent tests retry and skip instead of failing under load. The release-table
+  cross-check compares facts rather than display order; new assertions prove a rejected
+  rollback takes no backup and stops nothing, and that `start` seeds `pnx.yml` before
+  first boot. 66 CLI + 28 dashboard checks.
+
+
 ## [2.6.0] — 2026-11-04 — Dashboard rebuilt as an operations console
 
 The web dashboard was a wall of rounded glass cards with gradient washes and ALL-CAPS

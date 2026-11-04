@@ -288,11 +288,27 @@ if [ "${ASKOFF:-0}" != 1 ] && [ -t 1 ]; then
 else
   EASK=0
 fi
+jar_missing=0
 if [ ! -f "$REPO/runtime/powernukkitx.jar" ] || [ "$FORCEJAR" = 1 ]; then
-  spin "downloading and verifying the server (this can take a while)"
-  "$REPO/bambo" --setup${EASK:+ --menu} >"$INSTALL_LOG_DIR/install-jar.log" 2>&1; jar_rc=$?
-  spindown
-  [ $jar_rc -eq 0 ] || printf '  \033[33m!\033[0m jar setup had issues (see logs/install-jar.log in the app folder)\n'
+  if [ "$EASK" = 1 ]; then
+    # The version menu asks its question on stdout. Sending that only to a log meant
+    # the user watched a spinner while being prompted they could not see, and the
+    # install then finished 'successfully' with no server at all.
+    spindown
+    printf '  server: choose which version to install\n'
+    "$REPO/bambo" --setup --menu 2>&1 | tee "$INSTALL_LOG_DIR/install-jar.log"; jar_rc=${PIPESTATUS[0]}
+  else
+    spin "downloading and verifying the server (this can take a while)"
+    "$REPO/bambo" --setup >"$INSTALL_LOG_DIR/install-jar.log" 2>&1; jar_rc=$?
+    spindown
+  fi
+  if [ ! -f "$REPO/runtime/powernukkitx.jar" ]; then
+    jar_missing=1
+    printf '\n  \033[31m!\033[0m NO SERVER INSTALLED - bambo start (and the dashboard Start button) will fail.\n'
+    [ -s "$INSTALL_LOG_DIR/install-jar.log" ] && tail -4 "$INSTALL_LOG_DIR/install-jar.log" | sed 's/^/      /'
+    printf '  fix it with:  %s/bambo setup 3.0.6   or:  %s/bambo setup --menu\n' "$REPO" "$REPO"
+    printf '  (log: %s/install-jar.log)\n\n' "$INSTALL_LOG_DIR"
+  fi
 else
   spin "server already present, skipping download"; sleep 0.4; spindown
 fi
@@ -333,4 +349,8 @@ if [ "$START" = 1 ]; then
 fi
 
 echo
+if [ "$jar_missing" = 1 ]; then
+  printf '  Installed, but the server itself is missing - install it before starting.\n'
+  exit 1
+fi
 printf '  You are ready. Start the server with:  bambo start\n'

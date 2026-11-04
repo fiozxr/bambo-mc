@@ -8,6 +8,9 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 t "cli basics"
 FIX="$(make_fixture)"
 export BAMBO_ROOT="$FIX"
+# Own the session name: otherwise these tests read the operator's live server and fail
+# whenever it is running.
+export BAMBO_SESSION="bambo-test-$$"
 
 # the declared version, not a hard-coded one: the assertions below still prove the
 # CLI reports it consistently, but a release bump no longer needs test edits.
@@ -156,16 +159,18 @@ if BAMBO_ROOT="$FIX" "$ROOT/bambo" rollback 99.99.99 >/dev/null 2>&1; then
 else
   ok "rollback rejects an unknown version"
 fi
+# ...and it must refuse BEFORE it stops a running server or takes a backup.
+out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" rollback 99.99.99 2>&1)"
+check_contains "$out" "not a release bambo pins" "unknown release is rejected up front"
+[ -d "$FIX/runtime/backups" ] && [ -z "$(ls -A "$FIX/runtime/backups" 2>/dev/null)" ] \
+  && ok "rejected rollback took no backup" || true
 
 out="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" man 2>&1)"
 check_contains "$out" "rollback" "man page documents rollback"
 
 # a fixture with a recorded previous jar: rollback --prev swaps both ways offline.
-# Skipped when the real server is up: the tmux session name is fixed, so --prev
-# would stop and restart the actual 'bambo-mc' session rather than the fixture.
-if command -v tmux >/dev/null 2>&1 && tmux has-session -t bambo-mc 2>/dev/null; then
-  echo "  SKIP  rollback --prev swap tests (live 'bambo-mc' session; --prev would stop it)"
-else
+# Safe to run unconditionally now: BAMBO_SESSION above points these tests at their own
+# tmux session, so --prev can no longer reach a live 'bambo-mc' server to stop it.
 RB_FIX="$(make_fixture)"
 mkdir -p "$RB_FIX/runtime"
 echo NEWJAR > "$RB_FIX/runtime/powernukkitx.jar"
@@ -196,6 +201,102 @@ EOF
 out="$(BAMBO_ROOT="$NOFACT" "$ROOT/bambo" rollback --prev 2>&1)"
 check_contains "$out" "no recorded version" "rollback --prev refuses an unrecorded previous jar"
 check "$(cat "$NOFACT/runtime/powernukkitx.jar")" "CUR" "refused rollback leaves the jar untouched"
+
+# ---- interactive prompts must not depend on stdin being the terminal ----
+# 'curl -fsSL .../install.sh | bash' puts the script on stdin. When the menus checked
+# '-t 0' they refused to run during that install, so it finished with NO server jar and
+# a dashboard whose Start button could only ever fail.
+if command -v setsid >/dev/null 2>&1; then
+  out="$(setsid bash -c "BAMBO_ROOT='$FIX' '$ROOT/bambo' rollback" < /dev/null 2>&1)" || rc=1
+  case "$out" in *"needs an interactive terminal"*) ok "no terminal at all: menu refuses with guidance" ;;
+                 *) fail "no-terminal case did not refuse cleanly: $out" ;; esac
+  case "$out" in *"No such device or address"*) fail "the tty probe leaked a bash error to the user" ;;
+                *) ok "no leaked /dev/tty error text" ;; esac
+else
+  echo "  SKIP  no-terminal menu refusal (setsid unavailable)"
+fi
+
+# `script` can fail to hand out a pty when the machine is busy (an install downloading
+# a jar next door was enough), so retry, and treat "no pty at all" as a skip rather
+# than a failure - a test that only fails under load is worse than one that is skipped.
+pty_out() {   # pty_out <lines-for-stdin> <command...>
+  local inp="$1"; shift; local i out=""
+  for i in 1 2 3; do
+    out="$(printf '%s\n' "$inp" | script -qec "$*" /dev/null 2>&1)" && [ -n "$out" ] && break
+    sleep 0.5
+  done
+  printf '%s' "$out"
+}
+
+if command -v script >/dev/null 2>&1; then
+  out="$(pty_out '' "BAMBO_ROOT='$FIX' '$ROOT/bambo' rollback")"
+  case "$out" in
+    "")                       echo "  SKIP  piped-stdin menu behavior (no pty available)" ;;
+    *"needs an interactive terminal"*) fail "menu still refuses when stdin is a pipe but a terminal exists: $(echo "$out" | head -2)" ;;
+    *"Roll the server back"*)  ok "menu runs with piped stdin when a terminal exists (curl|bash shape)" ;;
+    *)                         fail "unexpected menu output: $(echo "$out" | head -2)" ;;
+  esac
+else
+  echo "  SKIP  piped-stdin menu behavior (script unavailable)"
+fi
+
+# ---- the config wizard must not receive its program on stdin ----
+# 'python3 - <<HEREDOC' consumed stdin as the script itself, leaving an empty stream for
+# the answers, so every question silently took its default.
+if grep -q 'python3 - <<.*wizard\|ESX_DEFAULTS="$defaults" python3 - <<' "$ROOT/bambo"; then
+  fail "wizard is fed through stdin again - answers would be swallowed"
+else
+  ok "wizard reads from a file, leaving stdin for the answers"
+fi
+grep -q 'python3 "$wiz"' "$ROOT/bambo" && ok "wizard program runs from a temp file" \
+                                         || fail "wizard no longer runs from a temp file"
+
+# wizard answers actually land, when a pty can be allocated
+if command -v script >/dev/null 2>&1; then
+  WFIX="$(make_fixture)"
+  WANS='PTYTESTNAME\nsub\n9\nfalse\ntrue\n2\n1\n12\nfalse\nfalse\n2048M\n5\n127.0.0.1\n8899\n'
+  for i in 1 2 3; do
+    printf "$WANS" | script -qec "BAMBO_ROOT='$WFIX' '$ROOT/bambo' config wizard" /dev/null >/dev/null 2>&1
+    grep -q 'BAMBO_SERVER_NAME=PTYTESTNAME' "$WFIX/bambo.conf" 2>/dev/null && break
+    rm -f "$WFIX/bambo.conf"; sleep 0.5
+  done
+  if [ ! -s "$WFIX/bambo.conf" ]; then
+    echo "  SKIP  wizard answer capture (no pty available)"
+  elif grep -q 'BAMBO_MAX_PLAYERS=9' "$WFIX/bambo.conf"; then
+    ok "wizard answers are written to bambo.conf"
+  else
+    fail "wizard ignored the typed answers: $(head -3 "$WFIX/bambo.conf" | tr '\n' ' ')"
+  fi
+  rm -rf "$WFIX"
+fi
+
+# ---- a fresh deployment must not stall on the engine's own first-run wizard ----
+# With no runtime/pnx.yml, PowerNukkitX prompts for a language on the console and
+# eventually exits without binding the port - and nothing can answer that prompt
+# through `bambo start`. start() seeds the tracked template (language: eng) instead.
+grep -q 'seeded runtime/pnx.yml' "$ROOT/bambo" \
+  && ok "start seeds runtime/pnx.yml before first boot" \
+  || fail "start no longer seeds pnx.yml - a wiped install will stall on the wizard"
+
+# ---- the dashboard's release list must agree with the CLI's version table ----
+# Two representations of the same fact (bash pnx_facts + Python RELEASES) is a drift
+# hazard, so compare what each actually prints rather than trusting a comment.
+cli_rel="$(BAMBO_ROOT="$FIX" "$ROOT/bambo" rollback --list 2>&1 \
+  | sed -n 's/^  \([0-9][0-9.]*\)  *Bedrock  *\([^ ]*\)  *protocol  *\([^ ]*\).*/\1 \2 \3/p')"
+dash_rel="$(python3 - "$ROOT/bin/bambo-dash.py" <<'PY'
+import re, sys
+src = open(sys.argv[1], encoding="utf-8").read()
+blk = re.search(r"RELEASES = \[(.*?)\n\]", src, re.S).group(1)
+for tag, proto, client in re.findall(r'\("([\d.]+)", "(\d+)", (?:"([\d.]+)"|None)\)', blk):
+    print("%s %s %s" % (tag, client or "unknown", proto))
+PY
+)"
+if [ -n "$cli_rel" ] && [ "$(printf '%s\n' "$cli_rel" | sort)" = "$(printf '%s\n' "$dash_rel" | sort)" ]; then
+  ok "dashboard release list matches the CLI version table"
+else
+  fail "release tables drifted:
+   CLI : $(echo "$cli_rel" | tr '\n' ';')
+   DASH: $(echo "$dash_rel" | tr '\n' ';')"
 fi
 
 summary

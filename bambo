@@ -18,7 +18,7 @@ set -uo pipefail
 # - SC2015: helpers ok()/bad()/info() always exit 0 (they only print), so "A && B || C" is safe.
 # - SC2012: ls is used deliberately on directories this project owns (backups/worlds).
 
-BAMBO_VERSION="2.6.0"
+BAMBO_VERSION="2.7.0"
 
 # cron's default PATH is /usr/bin:/bin, which omits /usr/sbin - where `ip` lives.
 # Without this, lan_ip()/join() silently return nothing when run from a cron job.
@@ -51,8 +51,11 @@ fi
 SRV="$ROOT/runtime"
 JAR="$SRV/powernukkitx.jar"
 JAR_PREV="$SRV/powernukkitx.jar.prev"
-SESSION="bambo-mc"
-SESSION_DASH="bambo-dash"
+# Overridable so the non-live test suite can run while a real server is up: with these
+# hard-coded, `bambo status` in a fixture reported the LIVE session and the suite only
+# passed when the server happened to be stopped - which the nightly backup job undoes.
+SESSION="${BAMBO_SESSION:-bambo-mc}"
+SESSION_DASH="${BAMBO_DASH_SESSION:-bambo-dash}"
 DASH_HOST="${BAMBO_DASH_HOST:-127.0.0.1}"
 DASH_PORT="${BAMBO_DASH_PORT:-8787}"
 JAVA_HOME_FALLBACK="/usr/lib/jvm/java-21-openjdk-amd64"
@@ -193,6 +196,16 @@ start() {
   # starting is an explicit act: clear the intentional-stop marker so the watchdog
   # treats subsequent crashes as genuine failures (and restarts them).
   rm -f "$INTENTIONAL_STOP"
+  # A deployment with no runtime/pnx.yml makes PowerNukkitX run its OWN first-time
+  # wizard on the console. Nobody can answer it through `bambo start`, so the server
+  # sits at "Language code [eng]:" and eventually exits without ever binding the port -
+  # which is what a freshly wiped install hits. Seeding the tracked template (it pins
+  # language: eng) skips the wizard; config apply still governs it afterwards.
+  if [ ! -f "$SRV/pnx.yml" ] && [ -f "$ROOT/server/pnx.yml" ]; then
+    cp "$ROOT/server/pnx.yml" "$SRV/pnx.yml" \
+      || { lock_release; die "could not seed $SRV/pnx.yml from the template"; }
+    echo "  seeded runtime/pnx.yml from server/pnx.yml (skips the engine's first-run wizard)"
+  fi
   cd "$SRV" || die "missing $SRV"
   tmux new-session -d -s "$SESSION" \
     "\"$jvm\" -Xms${HEAP} -Xmx${HEAP} -XX:+UseG1GC -XX:MaxGCPauseMillis=50 -XX:+ShowCodeDetailsInExceptionMessages -jar powernukkitx.jar" \
@@ -679,10 +692,22 @@ client_to_pnx() {
     *) echo "" ;;
   esac
 }
+# Prompts must not depend on stdin being a terminal. 'curl -fsSL .../install.sh | bash'
+# puts the installer on stdin while the user still has a keyboard on the controlling
+# terminal, which made every menu here refuse to run during the one-command install.
+# Re-attach stdin to that terminal; fail the same clear way when there is genuinely no
+# terminal to read from (cron, CI). The openability probe is its own command so its
+# /dev/null can never land on the shell's real stderr.
+use_terminal_stdin() {
+  [ -t 0 ] && return 0
+  # Scoped redirect: the braces keep the error suppression off the shell's real
+  # stderr, and bash opens /dev/tty before applying a trailing 2>/dev/null on the
+  # same command, which would leak "No such device or address" to the user.
+  { exec 0</dev/tty; } 2>/dev/null || return 1
+}
+
 setup_choose() {
-  if [ ! -t 0 ]; then
-    die "setup --ask needs an interactive terminal (use plain 'bambo setup' for defaults)"
-  fi
+  use_terminal_stdin || die "setup --ask needs an interactive terminal (use plain 'bambo setup' for defaults)"
   local detected tag want ans
   detected="$(client_detect)"
   echo "client version detected: ${detected:-unknown}"
@@ -715,7 +740,7 @@ setup_choose() {
 
 # ---- webhook notifications (optional; enabled by BAMBO_WEBHOOK_URL) ----
 setup_menu() {
-  [ -t 0 ] || die "version menu needs an interactive terminal (use plain 'bambo setup' for latest)"
+  use_terminal_stdin || die "version menu needs an interactive terminal (use plain 'bambo setup' for latest)"
   local detected tag ans custom
   detected="$(client_detect)"
   echo
@@ -824,7 +849,7 @@ update() {
       ;;
     apply)
       if [ "$ask" = 1 ]; then
-        [ -t 0 ] || die "update --ask needs an interactive terminal (use 'bambo update apply' for latest)"
+        use_terminal_stdin || die "update --ask needs an interactive terminal (use 'bambo update apply' for latest)"
         want="$(update_choose)"
       fi
       local was_up=0
@@ -1137,12 +1162,17 @@ config_wizard() {
       *) die "wizard: unknown option '$a'" ;;
     esac
   done
-  if [ "$defaults" = 0 ] && [ ! -t 0 ]; then
+  if [ "$defaults" = 0 ] && ! use_terminal_stdin; then
     die "wizard needs an interactive terminal (or run 'bambo config wizard --defaults')"
   fi
   command -v python3 >/dev/null || die "wizard needs python3"
   [ -f "$CONF" ] || config_init
-  ESX_CONF="$CONF" ESX_DEFAULTS="$defaults" python3 - <<'PY' || die "wizard failed"
+  # Fed from a file, not stdin: 'python3 - <<HEREDOC' consumes stdin as the program
+  # itself and leaves an empty stream for the answers, so every question silently took
+  # its default and a fresh install always ended up configured by accident.
+  local wiz
+  wiz="$(mktemp "${TMPDIR:-/tmp}/bambo-wizard.XXXXXX")" || die "wizard needs a temp file"
+  cat > "$wiz" <<'WIZ'
 import os, re, sys
 path = os.environ["ESX_CONF"]; defaults = os.environ["ESX_DEFAULTS"] == "1"
 cur = {}
@@ -1182,7 +1212,10 @@ for k, q, d in QS:
     lines.append(k + "=" + val)
 open(path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
 os.chmod(path, 0o600)
-PY
+WIZ
+  ESX_CONF="$CONF" ESX_DEFAULTS="$defaults" python3 "$wiz"; wiz_rc=$?
+  rm -f "$wiz"
+  [ "$wiz_rc" = 0 ] || die "wizard failed"
   echo "configuration written to $CONF"
   if [ "$applynow" = 1 ]; then
     config_apply --restart
@@ -1426,7 +1459,7 @@ rollback_list() {
   echo
   echo "known releases (download required):"
   local t pf
-  for t in 3.0.6 3.0.5 3.0.4 3.0.3 3.0.2 3.0.0 3.0.1; do
+  for t in 3.0.6 3.0.5 3.0.4 3.0.3 3.0.2 3.0.1 3.0.0; do
     pf="$(pnx_facts "$t")"
     printf '  %-8s Bedrock %-9s protocol %s\n' "$t" "${pf#*|}" "${pf%|*}"
   done
@@ -1441,6 +1474,12 @@ rollback_do() {
     want="$(client_to_pnx "$target")"
     [ -z "$want" ] && [[ "$target" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && want="$target"
     [ -n "$want" ] || die "unknown version '$target' (see: bambo rollback --list)"
+    # Validate against the pinned releases BEFORE touching a running server. Anything
+    # shaped like a version used to pass here, so `rollback 99.99.99` stopped the game,
+    # took a backup and only then failed the download - and its own recovery restart ran
+    # against the wrong root, leaving the server down.
+    local pf; pf="$(pnx_facts "$want")"
+    [ -n "${pf%|*}" ] || die "'$want' is not a release bambo pins (see: bambo rollback --list); use 'bambo setup <tag>' for an arbitrary release"
   fi
   [ "$want" != "prev" ] && [ "$want" = "$(state_get tag)" ] && { echo "already on PNX $want"; return 0; }
 
@@ -1489,7 +1528,7 @@ rollback_do() {
   if [ "$was_up" = 1 ]; then echo "restarting server..."; start; else echo "server is stopped - start with 'bambo start' when ready."; fi
 }
 rollback_menu() {
-  [ -t 0 ] || die "rollback menu needs an interactive terminal (use: bambo rollback --list / --prev / <version>)"
+  use_terminal_stdin || die "rollback menu needs an interactive terminal (use: bambo rollback --list / --prev / <version>)"
   local options=() ans custom i=1 o sel
   [ -f "$JAR_PREV" ] && options+=("prev:Previous installed jar (offline, no download) - PNX $(state_get prev_tag)")
   options+=("3.0.6:PNX 3.0.6 (Bedrock 1.26.60, protocol 2225)")
