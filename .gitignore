@@ -32,6 +32,12 @@ runtime/banned-ips.json
 runtime/banned-players.json
 runtime/pnx.yml.pre-apply-*
 runtime/.trash/
+# The server identity keypair and the undo copies 'restore'/'world delete' leave
+# behind. Both were missing here, which is how a private key and a whole world
+# snapshot ended up committed in v2.5.3.
+runtime/keys/
+runtime/*.pre-restore-*/
+runtime/*.stale-*
 
 # ── project logs (build/cron/dashboard/watchdog) ─────────────
 logs/*
