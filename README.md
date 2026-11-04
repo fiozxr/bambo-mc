@@ -65,7 +65,9 @@ After install, `bambo` (and `bambo-mc`, `bambo-dash`, `bambo-nettest`) are globa
 | Console | full interactive console, broadcast, plugins list, TPS |
 | Config | one friendly file `bambo.conf` + interactive wizard + validated apply |
 | Backups | nightly automatic snapshots (worlds+players+config+manifest), retention, restore |
+| Versions | `bambo rollback --prev` (offline), any pinned release, or any release tag; chooser in the dashboard |
 | Updates | `bambo update check/apply [--ask]` — upstream-aware, safe upgrade path |
+| Uninstall | `bambo uninstall` stops services, removes the cron entries and the global commands, keeps all your data (`--purge` to delete it) |
 | Dashboard | ops console at http://127.0.0.1:8787 - live status, alerts, heartbeat of who is in, filterable server log, players/worlds/backups, confirm-gated destructive actions (token-gated, audited, rate-limited) |
 | Monitoring | `bambo health --json`, doctor, optional watchdog auto-restart, webhook alerts |
 | Install | one-command bootstrap with interactive version & config prompts |
@@ -87,6 +89,8 @@ bambo world list|create|rename|delete|default|trash|save|tp
 bambo user list|info|op|deop|whitelist|ban|unban|kick|gamemode
 bambo cmd "<console command>" | broadcast "<msg>" | plugins | tps
 bambo backup | restore list|<ts>
+bambo rollback [version|--prev|--list]   undo a version change
+bambo uninstall [--yes] [--purge]        remove commands + cron, keep data
 bambo maintenance status|on|off          # daily auto-restart (04:00)
 bambo audit [n] | docs [README|runbook|security]
 ```

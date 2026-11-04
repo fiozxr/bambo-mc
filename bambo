@@ -18,7 +18,7 @@ set -uo pipefail
 # - SC2015: helpers ok()/bad()/info() always exit 0 (they only print), so "A && B || C" is safe.
 # - SC2012: ls is used deliberately on directories this project owns (backups/worlds).
 
-BAMBO_VERSION="2.7.0"
+BAMBO_VERSION="2.8.0"
 
 # cron's default PATH is /usr/bin:/bin, which omits /usr/sbin - where `ip` lives.
 # Without this, lan_ip()/join() silently return nothing when run from a cron job.
@@ -56,6 +56,7 @@ JAR_PREV="$SRV/powernukkitx.jar.prev"
 # passed when the server happened to be stopped - which the nightly backup job undoes.
 SESSION="${BAMBO_SESSION:-bambo-mc}"
 SESSION_DASH="${BAMBO_DASH_SESSION:-bambo-dash}"
+CRONTAB_BIN="${BAMBO_CRONTAB_BIN:-crontab}"   # overridable so tests never touch the real crontab
 DASH_HOST="${BAMBO_DASH_HOST:-127.0.0.1}"
 DASH_PORT="${BAMBO_DASH_PORT:-8787}"
 JAVA_HOME_FALLBACK="/usr/lib/jvm/java-21-openjdk-amd64"
@@ -316,7 +317,7 @@ health() {
   local n; n="$(find "$SRV/backups" -maxdepth 1 -mindepth 1 -type d -name '[0-9][0-9]*' 2>/dev/null | wc -l)"
   echo "  backups    : $n snapshot(s) (retention ${BAMBO_KEEP:-10})"
   echo "  disk       : $(df -h "$ROOT" | awk 'NR==2{print $4" free of "$2" ("$5" used)"}')"
-  local cr; cr="$(crontab -l 2>/dev/null | grep -c 'bambo backup')"
+  local cr; cr="$("$CRONTAB_BIN" -l 2>/dev/null | grep -c 'bambo backup')"
   echo "  cron backup : $([ "$cr" -ge 1 ] && echo installed || echo MISSING)"
 }
 
@@ -879,23 +880,23 @@ maintenance() {
   local line="0 4 * * * cd \"$ROOT\" && ./bambo restart >> \"$ROOT/logs/maintenance.log\" 2>&1"
   case "$sub" in
     status)
-      if crontab -l 2>/dev/null | grep -qF "bambo restart"; then
+      if "$CRONTAB_BIN" -l 2>/dev/null | grep -qF "bambo restart"; then
         echo "daily auto-restart: ON (04:00)"
       else
         echo "daily auto-restart: OFF"
       fi
       ;;
     on)
-      crontab -l 2>/dev/null | grep -qF "bambo restart" && { echo "daily auto-restart already ON"; return 0; }
+      "$CRONTAB_BIN" -l 2>/dev/null | grep -qF "bambo restart" && { echo "daily auto-restart already ON"; return 0; }
       mkdir -p "$ROOT/backups" "$ROOT/logs"
       local stamp; stamp="$(date +%Y%m%d-%H%M%S)"
-      crontab -l 2>/dev/null > "$ROOT/backups/crontab.backup.$stamp" || true
-      { crontab -l 2>/dev/null; echo "$line"; } | crontab -
+      "$CRONTAB_BIN" -l 2>/dev/null > "$ROOT/backups/crontab.backup.$stamp" || true
+      { "$CRONTAB_BIN" -l 2>/dev/null; echo "$line"; } | "$CRONTAB_BIN" -
       echo "daily auto-restart enabled (04:00); previous crontab saved to backups/crontab.backup.$stamp"
       ;;
     off)
-      crontab -l 2>/dev/null | grep -qF "bambo restart" || { echo "daily auto-restart already OFF"; return 0; }
-      crontab -l 2>/dev/null | grep -vF "bambo restart" | crontab -
+      "$CRONTAB_BIN" -l 2>/dev/null | grep -qF "bambo restart" || { echo "daily auto-restart already OFF"; return 0; }
+      "$CRONTAB_BIN" -l 2>/dev/null | grep -vF "bambo restart" | "$CRONTAB_BIN" -
       echo "daily auto-restart disabled"
       ;;
     *) die "maintenance: use status|on|off" ;;
@@ -1565,6 +1566,92 @@ rollback() {
     *) rollback_do "$1" ;;
   esac
 }
+# ---- uninstall: stop services, drop the cron jobs, remove the global commands ----
+# Data is kept unless --purge says otherwise, and the repository itself is never
+# removed: it is a git checkout with someone's history in it, and deleting it is a
+# decision for the operator, not for a script.
+uninstall() {
+  local purge=0 assume_no=0 bin="${BAMBO_BIN_DIR:-${XDG_BIN_HOME:-$HOME/.local/bin}}" a
+  for a in "$@"; do
+    case "$a" in
+      --purge) purge=1 ;;
+      --yes|-y) assume_no=1 ;;
+      --prefix=*) bin="${a#*=}" ;;
+      *) die "uninstall: use [--purge] [--yes] [--prefix=DIR]" ;;
+    esac
+  done
+
+  echo "bambo-mc uninstall"
+  echo "  app folder    : $ROOT"
+  echo "  commands      : $bin/{bambo,bambo-mc,bambo-dash,bambo-nettest}"
+  echo " will:"
+  echo "  - stop the game server and the dashboard"
+  echo "  - remove the nightly backup and daily-restart entries from your crontab"
+  echo "  - remove those four commands (nothing else in $bin)"
+  if [ "$purge" = 1 ]; then
+    echo "  - DELETE all server data: runtime/ (worlds, players, backups), bambo.conf, dash.token"
+  else
+    echo "  - KEEP runtime/, bambo.conf and dash.token in $ROOT (add --purge to delete them)"
+  fi
+
+  if [ "$assume_no" != 1 ]; then
+    use_terminal_stdin || die "uninstall needs a terminal, or pass --yes to proceed without asking"
+    printf '\nProceed? [y/N] '
+    local reply; read -r reply || true
+    case "$reply" in y|Y|yes|YES) ;; *) echo "cancelled - nothing removed"; return 0 ;; esac
+  fi
+
+  # stop first: removing the wrappers under a running server would leave it unmanaged
+  dash_up && ( dash stop )
+  is_up && ( stop )
+
+  # crontab: back it up next to the other snapshots, then drop only our own lines
+  if command -v "$CRONTAB_BIN" >/dev/null 2>&1; then
+    local now; now="$(date +%Y%m%d-%H%M%S)"
+    if "$CRONTAB_BIN" -l > "$ROOT/backups/crontab.backup.pre-uninstall-$now" 2>/dev/null; then
+      if grep -qE 'bambo (backup|restart)|/bambo-mc/' "$ROOT/backups/crontab.backup.pre-uninstall-$now" 2>/dev/null; then
+        grep -vE 'bambo (backup|restart)|/bambo-mc/' "$ROOT/backups/crontab.backup.pre-uninstall-$now" | "$CRONTAB_BIN" - \
+          && echo "  crontab: nightly backup and daily restart removed (previous crontab: backups/crontab.backup.pre-uninstall-$now)" \
+          || echo "  crontab: could not be rewritten - edit it yourself (backup: backups/crontab.backup.pre-uninstall-$now)" >&2
+      else
+        echo "  crontab: no bambo entries found, left untouched"
+        rm -f "$ROOT/backups/crontab.backup.pre-uninstall-$now"
+      fi
+    else
+      echo "  crontab: could not be read (no crontab, or permission) - left alone" >&2
+    fi
+  fi
+
+  # wrappers: hand this to install.sh, which knows how to tell ours from someone else's
+  if [ -f "$ROOT/install.sh" ]; then
+    BAMBO_BIN_DIR="$bin" bash "$ROOT/install.sh" --uninstall --prefix="$bin" 2>/dev/null \
+      || { local c; for c in bambo bambo-mc bambo-dash bambo-nettest; do
+             [ -f "$bin/$c" ] && grep -qF -- "$ROOT" "$bin/$c" 2>/dev/null && rm -f "$bin/$c" && echo "  removed $bin/$c"; done; }
+  else
+    local c
+    for c in bambo bambo-mc bambo-dash bambo-nettest; do
+      [ -f "$bin/$c" ] && grep -qF -- "$ROOT" "$bin/$c" 2>/dev/null && rm -f "$bin/$c" && echo "  removed $bin/$c"
+    done
+  fi
+
+  if [ "$purge" = 1 ]; then
+    # guarded on the app marker: never expand against an empty or wrong path
+    if [ -f "$ROOT/bambo" ] && [ -d "$ROOT/runtime" ]; then
+      rm -rf -- "$ROOT/runtime" "$ROOT/bambo.conf" "$ROOT/dash.token"
+      echo "  data: runtime/, bambo.conf and dash.token deleted"
+    else
+      echo "  data: $ROOT does not look like a bambo-mc root - nothing deleted" >&2
+    fi
+  else
+    echo "  data: kept in $ROOT/runtime (worlds, players, $(ls -A "$ROOT/runtime/backups" 2>/dev/null | wc -l) backups)"
+  fi
+
+  echo
+  echo "  Uninstalled. The app folder $ROOT was left in place; remove it yourself only"
+  echo "  once you are sure you want the source and git history gone."
+  echo "  Reinstall: curl -fsSL https://raw.githubusercontent.com/fiozxr/bambo-mc/main/install.sh | bash"
+}
+
 version() {
   echo "bambo-mc v$BAMBO_VERSION"
   local tag proto client
@@ -1640,7 +1727,7 @@ doctor() {
   info "backups: $n snapshot(s) in runtime/backups (retention ${BAMBO_KEEP:-10})"
 
   # retention
-  local cr; cr="$(crontab -l 2>/dev/null | grep -c 'bambo backup')"
+  local cr; cr="$("$CRONTAB_BIN" -l 2>/dev/null | grep -c 'bambo backup')"
   [ "$cr" -ge 1 ] && ok "nightly backup cron installed" || info "nightly backup cron NOT installed (see README)"
 
   # dashboard
@@ -1705,6 +1792,9 @@ bambo (alias: bambo-mc) v$BAMBO_VERSION - control the Bedrock server + admin das
                             undo a version change: --prev swaps back to the jar kept
                             on disk (offline, no download); a version re-installs it;
                             no argument opens the version menu
+  bambo uninstall [--yes] [--purge] [--prefix=DIR]
+                          stop services, drop the cron entries, remove the global
+                          commands; keeps worlds/players/backups unless --purge
   bambo bootstrap [--start] [--dry-run] [--ask]   automatic fresh-machine setup:
                           deps + jar + wrappers + nightly cron + token (+ server)
 
@@ -1813,6 +1903,17 @@ COMMANDS
                          recorded as prev_* in the state, for offline rollback.
                          --ask prompts to install the release matching a detected
                          local client version, or the latest stable.
+    uninstall [--yes] [--purge]
+                         remove the installation: stops the server and dashboard,
+                         deletes the nightly backup and daily-restart crontab lines
+                         (previous crontab saved under backups/), removes the four
+                         global commands, and keeps every byte of runtime data,
+                         bambo.conf and dash.token. --purge also deletes those, so
+                         take a backup first if you might want the worlds back. The
+                         app folder and its git history are never removed. --yes
+                         skips the confirmation for scripted use; --prefix=DIR
+                         points at a different command directory (use the one you
+                         installed with, e.g. /usr/local/bin under sudo).
     rollback [target]    undo a version change (backs up first, swaps the jar, then
                          restarts only if the server was running).
                          --prev     put powernukkitx.jar.prev back in place and swap
@@ -1901,6 +2002,7 @@ main() {
         bootstrap) bootstrap "$@" ;;
         setup)    case "${1:-}" in --ask) setup_choose ;; --menu) setup_menu ;; *) setup "${1:-}" ;; esac ;;
         rollback) rollback "${1:-}" ;;
+        uninstall) uninstall "$@" ;;
         backup)   backup "${1:-}" ;;
         restore)  restore "${1:-list}" ;;
         *)        die "unknown option '$a' - try: bambo --help" ;;

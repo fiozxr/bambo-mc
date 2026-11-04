@@ -29,7 +29,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-TOOL_VERSION = "2.7.0"
+TOOL_VERSION = "2.8.0"
 MAX_BODY = 64 * 1024          # request body cap (bytes)
 MAX_ARGS = 8                  # max args in one admin action
 MAX_ARG_LEN = 256             # max length of a single arg
@@ -73,11 +73,11 @@ ACTIONS = {
 # string); bambo itself validates the subcommand and refuses bad input. 'cmd' is the raw
 # operator pass-through - that is why every POST here is token-gated.
 ADMIN = {"players", "op", "whitelist", "world", "user", "plugins", "broadcast", "tps", "cmd",
-         "motd", "config", "restore", "rollback", "update", "maintenance"}
+         "motd", "config", "restore", "rollback", "update", "maintenance", "setup"}
 
 # These stop the server, tar the worlds or restart the engine; the ~40s restart plus
 # a large world copy must not be killed by the read-only 120s timeout mid-transfer.
-SLOW = ACTIONS.keys() | {"motd", "world", "config", "restore", "rollback", "update"}
+SLOW = ACTIONS.keys() | {"motd", "world", "config", "restore", "rollback", "update", "setup"}
 SLOW_TIMEOUT = 600
 
 
@@ -877,6 +877,11 @@ details[open] summary{color:var(--txt)}
               <button id=verGo class=danger type=button
                 data-confirm="Install this engine build? Takes a backup, stops the server, downloads the jar, then restarts if it was running. Clients must match the Bedrock version it speaks.">Switch</button>
             </div>
+            <div class="row" style=padding:0 12px 12px>
+              <label for=verCustom style=font-size:12px;color:var(--dim)>Or install</label>
+              <input id=verCustom class=grow placeholder="any release tag, e.g. 3.0.4" aria-label="Release tag to install">
+              <button id=verInstall type=button data-confirm="Download that release and make it the live server? Restart the server afterwards to run it.">Install</button>
+            </div>
             <div class="dbo faint" style=font-size:12px id=verHint></div>
             <div class="res hidden" id=verRes></div>
           </div>
@@ -1440,6 +1445,12 @@ function wireActions(){
     if(!tag){toast("Choose a version first","","err");return;}
     run(e.currentTarget,"rollback",[tag],"Switched the engine to PNX "+tag,$("#verRes")).then(()=>tick(true));
   });
+  $("#verInstall").addEventListener("click",(e)=>{
+    if(!armed(e.currentTarget))return;         // installs a build and makes it live
+    const v=$("#verCustom").value.trim();
+    if(!v){toast("Type a release tag first","For example: 3.0.4","","err");return;}
+    run(e.currentTarget,"setup",[v],"Installed PNX "+v,$("#verRes")).then(()=>tick(true));
+  });
   $("#prevBtn").addEventListener("click",(e)=>{
     const b=e.currentTarget;
     if(!armed(b))return;                       // swapping the engine stops the server
@@ -1501,9 +1512,9 @@ function renderVersion(s){
     if(hint){
       const cur=s.releases.filter(r=>r.current)[0];
       hint.textContent=cur
-        ?("Currently PNX "+cur.tag+", which speaks Bedrock "+(cur.client_version||"an unknown version")+
-          ". Players whose client is a different Bedrock release cannot join it.")
-        :"This build is not one of the pinned releases; the list still lets you switch back.";
+        ?("Currently PNX "+cur.tag+", serving Bedrock "+(cur.client_version||"an unknown version")+
+          ". Pick from the list, or install any other release by tag - clients on a different Bedrock release cannot join.")
+        :"This build is not one of the pinned releases; use the field below to install one.";
     }
   }
 }

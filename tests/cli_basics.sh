@@ -299,5 +299,81 @@ else
    DASH: $(echo "$dash_rel" | tr '\n' ';')"
 fi
 
+# ---- bambo uninstall: surgical, and never near the operator's real crontab ----
+UT="$(mktemp -d)"
+UA="$UT/app"
+mkdir -p "$UA/runtime/worlds" "$UA/logs" "$UA/backups" "$UA/bin"
+cp "$ROOT/bambo" "$UA/bambo"; chmod +x "$UA/bambo"
+cp "$ROOT/install.sh" "$UA/install.sh"
+cp "$ROOT/config.example" "$UA/config.example" 2>/dev/null || true
+cp "$ROOT/config.example" "$UA/bambo.conf" 2>/dev/null || echo "BAMBO_MAX_PLAYERS=20" > "$UA/bambo.conf"
+echo "t" > "$UA/dash.token"
+echo level-data > "$UA/runtime/level-data"
+# a crontab stand-in: -l prints the file, stdin installs it
+printf '0 4 * * * /usr/bin/unrelated-job\n' > "$UT/crontab-content"
+printf '30 3 * * * cd %s && ./bambo stop && ./bambo backup && ./bambo start >> %s/logs/cron-backup.log 2>&1\n' "$UA" "$UA" >> "$UT/crontab-content"
+cat > "$UT/fakecrontab" <<'CT'
+#!/usr/bin/env bash
+if [ "${1:-}" = "-l" ]; then cat "$UT_CRONTAB" 2>/dev/null; exit 0; fi
+cat > "$UT_CRONTAB"
+CT
+chmod +x "$UT/fakecrontab"
+# the four wrappers this install made, plus a command that belongs to someone else
+for c in bambo bambo-mc bambo-dash bambo-nettest; do
+  printf '#!/usr/bin/env bash\nexec "%s/bambo" "$@"\n' "$UA" > "$UA/bin/$c"; chmod +x "$UA/bin/$c"
+done
+printf '#!/usr/bin/env bash\nexec /opt/other/keep-me\n' > "$UA/bin/other-tool"
+chmod +x "$UA/bin/other-tool"
+
+run_uninstall() {
+  BAMBO_ROOT="$UA" BAMBO_SESSION="bambo-ut-$$" BAMBO_DASH_SESSION="bambo-utd-$$" \
+  BAMBO_CRONTAB_BIN="$UT/fakecrontab" UT_CRONTAB="$UT/crontab-content" \
+    "$ROOT/bambo" uninstall "$@" --prefix="$UA/bin"
+}
+
+# the confirmation gate must be reachable without a terminal; setsid removes the
+# controlling tty so this cannot block waiting on whoever is running the suite
+if command -v setsid >/dev/null 2>&1; then
+  out="$(setsid bash -c "UT_CRONTAB='$UT/crontab-content' BAMBO_ROOT='$UA' BAMBO_SESSION='bambo-ut-$$' BAMBO_DASH_SESSION='bambo-utd-$$' BAMBO_CRONTAB_BIN='$UT/fakecrontab' '$ROOT/bambo' uninstall --prefix='$UA/bin'" < /dev/null 2>&1)"
+  check_contains "$out" "pass --yes" "uninstall asks before removing anything"
+  [ -f "$UA/bin/bambo" ] && ok "a refused uninstall removes no wrappers" || fail "refused uninstall still removed wrappers"
+  grep -q 'bambo backup' "$UT/crontab-content" && ok "a refused uninstall leaves the crontab alone" \
+                                                || fail "refused uninstall edited the crontab"
+else
+  echo "  SKIP  uninstall confirmation path (setsid unavailable)"
+fi
+
+out="$(run_uninstall --yes 2>&1)"
+[ ! -e "$UA/bin/bambo" ] && ok "uninstall removes this install's wrappers" || fail "our wrapper survived uninstall"
+[ -f "$UA/bin/other-tool" ] && ok "an unrelated command in the same dir is left alone" \
+                             || fail "uninstall deleted a command that was not ours"
+grep -q unrelated-job "$UT/crontab-content" && ok "unrelated crontab entries survive" \
+                                             || fail "uninstall destroyed someone else's cron job"
+grep -q 'bambo backup' "$UT/crontab-content" && fail "the nightly backup job was left behind" \
+                                             || ok "uninstall removes the nightly backup job"
+ls "$UA"/backups/crontab.backup.pre-uninstall-* >/dev/null 2>&1 \
+  && ok "the previous crontab is kept so this is undoable" || fail "no crontab backup was written"
+[ -f "$UA/runtime/level-data" ] && ok "worlds and backups survive by default" \
+                                || fail "uninstall deleted data without --purge"
+[ -s "$UA/bambo.conf" ] && ok "bambo.conf survives by default" || fail "uninstall deleted bambo.conf without --purge"
+
+out="$(run_uninstall --yes --purge 2>&1)"
+[ ! -e "$UA/runtime" ] && ok "--purge deletes runtime data" || fail "--purge left runtime in place"
+[ ! -e "$UA/bambo.conf" ] && ok "--purge deletes bambo.conf" || fail "--purge kept bambo.conf"
+[ ! -e "$UA/dash.token" ] && ok "--purge deletes the dashboard token" || fail "--purge kept dash.token"
+[ -f "$UA/bambo.conf" ] && ok "bambo.conf survives the non-purge run" || true
+[ -f "$UA/bambo" ] && ok "the app folder and its git history are never deleted" \
+                    || fail "--purge deleted the app folder itself"
+
+# --purge must refuse a directory that is not a bambo-mc root
+NB="$(mktemp -d)"; mkdir -p "$NB/runtime" "$NB/bin"; echo precious > "$NB/runtime/precious"
+out="$(BAMBO_ROOT="$NB" BAMBO_SESSION="bambo-nb-$$" BAMBO_DASH_SESSION="bambo-nbd-$$" \
+        BAMBO_CRONTAB_BIN="$UT/fakecrontab" UT_CRONTAB="$UT/crontab-content" \
+        "$ROOT/bambo" uninstall --yes --purge --prefix="$NB/bin" 2>&1)"
+check_contains "$out" "does not look like a bambo-mc root" "purge refuses a directory that is not the app"
+[ -f "$NB/runtime/precious" ] && ok "bystander data in an unrelated runtime dir survives" \
+                               || fail "purge deleted an unrelated runtime directory"
+rm -rf "$UT" "$NB"
+
 summary
 

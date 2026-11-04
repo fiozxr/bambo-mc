@@ -2,6 +2,36 @@
 
 All notable changes to bambo-mc are documented here (project-initiated work, not upstream PNX).
 
+## [2.8.0] — 2026-11-04 — `bambo uninstall`, and any release can be installed
+
+### Added
+- **`bambo uninstall [--yes] [--purge] [--prefix=DIR]`** - a real uninstall command in
+  the CLI, where every other operation already lives. It stops the dashboard and the
+  game server, removes only its own crontab entries (the nightly backup job and the
+  daily restart), saves the previous crontab under `backups/` so the edit is undoable,
+  and deletes only the four global commands this project created - it checks the file
+  contents first, so an unrelated `bambo` in the same directory survives. Worlds,
+  players, backups, `bambo.conf` and `dash.token` are all kept by default, because
+  uninstalling the software and destroying a family's builds are different requests;
+  `--purge` deletes them and says so in the plan shown before the confirmation. The
+  app folder and its git history are never removed - that stays an operator decision,
+  and the closing message says how to do it deliberately.
+- **Install any release from the dashboard.** The version list only covers releases this
+  project pins; an "Or install" field takes any release tag and routes it through
+  `bambo setup <tag>`, which verifies the published sha256. `setup` joined the allowed
+  actions and the slow-action timeout, since it pulls ~90MB.
+
+### Tests
+- 15 new assertions for uninstall, covering the paths that matter: it asks before
+  removing anything, a refused run changes nothing, only its own wrappers go, a foreign
+  command in the same bin survives, unrelated cron entries survive, the previous
+  crontab is saved, data is kept by default and deleted only by `--purge`, and
+  `--purge` refuses to delete a `runtime/` belonging to something that is not this app.
+- The suite's crontab access is stubbed via `BAMBO_CRONTAB_BIN`, so no test can rewrite
+  the operator's real crontab - the same reason `BAMBO_SESSION` exists.
+- 82 CLI + 28 dashboard checks.
+
+
 ## [2.7.0] — 2026-11-04 — Piped-install prompts fixed, version picker in the dashboard
 
 ### Fixed — the one-command install could not finish
