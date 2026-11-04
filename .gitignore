@@ -42,6 +42,10 @@ runtime/*.stale-*
 # ── project logs (build/cron/dashboard/watchdog) ─────────────
 logs/*
 !logs/.gitkeep
+# crontab snapshots written by `install.sh` and `bambo maintenance on`. Not
+# ignored here once, which is how one got committed in October; they hold the
+# absolute paths and schedules of whichever machine ran the install.
+backups/
 
 # ── third-party downloaded reference (kept as its own repo) ─
 forks/
